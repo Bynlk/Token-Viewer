@@ -1,12 +1,12 @@
 {
   "name": "token-viewer",
   "displayName": "Token Viewer",
-  "description": "在 VSCode 状态栏实时显示目标服务的剩余 Token 数量",
-  "version": "1.0.0",
+  "description": "在 VSCode 状态栏实时显示小米 MiMo 平台的剩余 Token 数量",
+  "version": "1.1.0",
   "publisher": "bynlk",
   "repository": {
     "type": "git",
-    "url": "https://github.com/bynlk/token-viewer.git"
+    "url": "https://github.com/Bynlk/Token-Viewer.git"
   },
   "engines": {
     "vscode": "^1.74.0"
@@ -26,36 +26,26 @@
       },
       {
         "command": "tokenViewer.configure",
-        "title": "Token Viewer: 配置设置"
+        "title": "Token Viewer: 配置 Cookie"
       }
     ],
     "configuration": {
       "title": "Token Viewer",
       "properties": {
-        "tokenViewer.apiUrl": {
-          "type": "string",
-          "default": "",
-          "description": "API 地址，用于获取剩余 Token 数量（HTTP GET 请求）"
-        },
         "tokenViewer.headers": {
           "type": "object",
           "default": {},
-          "description": "请求头（JSON 对象），例如 {\"Cookie\": \"session=abc123\", \"Authorization\": \"Bearer xxx\"}"
-        },
-        "tokenViewer.jsonPath": {
-          "type": "string",
-          "default": "",
-          "description": "JSON 响应中 Token 数量的解析路径。支持：简单路径(data.remaining)、数组索引(data.items[0].limit)、减法表达式(data.items[0].limit - data.items[0].used)"
+          "description": "请求头（JSON 对象），只需填写 Cookie"
         },
         "tokenViewer.refreshInterval": {
           "type": "number",
-          "default": 60,
+          "default": 300,
           "minimum": 10,
           "description": "自动刷新间隔（秒），最小值为 10 秒"
         },
         "tokenViewer.alertThreshold": {
           "type": "number",
-          "default": 100,
+          "default": 10000000,
           "minimum": 0,
           "description": "告警阈值，当剩余 Token 小于等于此值时显示警告"
         }
@@ -65,8 +55,7 @@
   "scripts": {
     "vscode:prepublish": "npm run compile",
     "compile": "tsc -p ./",
-    "watch": "tsc -watch -p ./",
-    "lint": "eslint src --ext ts"
+    "watch": "tsc -watch -p ./"
   },
   "devDependencies": {
     "@types/node": "^18.19.0",
