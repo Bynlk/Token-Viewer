@@ -87,160 +87,203 @@ export function deactivate(): void {
 }
 
 // ============================================================
-// 交互式配置向导 - 通过输入框逐步配置所有设置
+// 已知平台配置注册表
+// ============================================================
+interface PlatformProfile {
+    label: string;           // 显示名称
+    description: string;     // 简短描述
+    apiUrl: string;          // API 地址
+    jsonPath: string;        // JSON 解析路径
+    headerHint: string;      // 请求头提示（告诉用户需要什么）
+    headerKey: string;       // 请求头的键名（如 "Cookie"、"Authorization"）
+}
+
+/** 内置支持的平台列表 */
+const PLATFORM_PROFILES: PlatformProfile[] = [
+    {
+        label: '$(globe) 小米 MiMo',
+        description: 'platform.xiaomimimo.com',
+        apiUrl: 'https://platform.xiaomimimo.com/api/v1/tokenPlan/usage',
+        jsonPath: 'data.usage.items[0].limit - data.usage.items[0].used',
+        headerHint: '请从浏览器复制完整的 Cookie 字符串',
+        headerKey: 'Cookie',
+    },
+    {
+        label: '$(globe) OpenAI',
+        description: 'api.openai.com',
+        apiUrl: 'https://api.openai.com/dashboard/billing/credit_grants',
+        jsonPath: 'total_granted - total_used',
+        headerHint: '请从浏览器复制 Cookie，或输入 API Key（Bearer sk-xxx）',
+        headerKey: 'Authorization',
+    },
+    {
+        label: '$(globe) DeepSeek',
+        description: 'api.deepseek.com',
+        apiUrl: 'https://api.deepseek.com/user/balance',
+        jsonPath: 'balance_infos[0].total_balance',
+        headerHint: '请输入 API Key（Bearer sk-xxx）',
+        headerKey: 'Authorization',
+    },
+    {
+        label: '$(globe) 通义千问',
+        description: 'dashscope.aliyuncs.com',
+        apiUrl: 'https://dashscope.aliyuncs.com/api/v1/services/aigc/text-generation/generation',
+        jsonPath: '',
+        headerHint: '请输入 API Key（Bearer sk-xxx）',
+        headerKey: 'Authorization',
+    },
+    {
+        label: '$(globe) Claude (Anthropic)',
+        description: 'console.anthropic.com',
+        apiUrl: '',
+        jsonPath: '',
+        headerHint: '请从浏览器复制 Cookie 或输入 API Key',
+        headerKey: 'Cookie',
+    },
+    {
+        label: '$(globe) 豆包 (字节跳动)',
+        description: 'www.doubao.com',
+        apiUrl: '',
+        jsonPath: '',
+        headerHint: '请从浏览器复制完整的 Cookie 字符串',
+        headerKey: 'Cookie',
+    },
+    {
+        label: '$(globe) Kimi (月之暗面)',
+        description: 'kimi.moonshot.cn',
+        apiUrl: '',
+        jsonPath: '',
+        headerHint: '请从浏览器复制完整的 Cookie 字符串',
+        headerKey: 'Cookie',
+    },
+    {
+        label: '$(globe) 智谱 AI',
+        description: 'open.bigmodel.cn',
+        apiUrl: 'https://open.bigmodel.cn/api/paas/v4/user/status',
+        jsonPath: 'data.total_quota - data.used_quota',
+        headerHint: '请输入 API Key（Bearer xxx）',
+        headerKey: 'Authorization',
+    },
+    {
+        label: '$(globe) 零一万物',
+        description: 'api.lingyiwanwu.com',
+        apiUrl: 'https://api.lingyiwanwu.com/v1/dashboard/billing/subscription',
+        jsonPath: 'data.total_granted - data.used_granted',
+        headerHint: '请输入 API Key（Bearer xxx）',
+        headerKey: 'Authorization',
+    },
+    {
+        label: '$(edit) 自定义平台',
+        description: '手动输入 API 地址和 JSON 路径',
+        apiUrl: '',
+        jsonPath: '',
+        headerHint: '请输入请求头（JSON 格式，如 {"Cookie": "xxx"}）',
+        headerKey: '',
+    },
+];
+
+// ============================================================
+// 交互式配置向导 - 平台自动识别，只需粘贴 Cookie
 // ============================================================
 async function configureSettings(context: vscode.ExtensionContext): Promise<void> {
     const config = vscode.workspace.getConfiguration('tokenViewer');
 
-    // ---- 第 1 步：配置 API 地址 ----
-    const currentApiUrl = config.get<string>('apiUrl', '');
-    const apiUrl = await vscode.window.showInputBox({
-        prompt: '【第 1 步 / 共 5 步】请输入 API 地址\n\n' +
-            '获取方法：浏览器登录目标网站 → F12 → Network → 找到返回 Token 数量的请求 → 复制 Request URL',
-        placeHolder: 'https://api.example.com/dashboard/billing/credit_grants',
-        value: currentApiUrl,
-        validateInput: (value) => {
-            if (!value || value.trim() === '') {
-                return 'API 地址不能为空';
-            }
-            if (!value.startsWith('http://') && !value.startsWith('https://')) {
-                return 'API 地址必须以 http:// 或 https:// 开头';
-            }
-            return null;
-        },
+    // ---- 第 1 步：选择平台 ----
+    const platformItems: vscode.QuickPickItem[] = PLATFORM_PROFILES.map(p => ({
+        label: p.label,
+        description: p.description,
+    }));
+
+    const selectedPlatform = await vscode.window.showQuickPick(platformItems, {
+        placeHolder: '选择你要监控的 AI 平台（选择后自动填充 API 地址和 JSON 路径）',
+        title: 'Token Viewer 配置 - 第 1 步：选择平台',
     });
-    if (apiUrl === undefined) {
+
+    if (!selectedPlatform) {
         vscode.window.showInformationMessage('Token Viewer 配置已取消');
         return;
     }
 
-    // ---- 第 2 步：配置请求头 ----
-    const currentHeaders = config.get<Record<string, string>>('headers', {});
-    const currentHeadersStr = Object.keys(currentHeaders).length > 0
-        ? JSON.stringify(currentHeaders, null, 2)
-        : '{\n  "Cookie": "your_cookie_value"\n}';
-    const headersStr = await vscode.window.showInputBox({
-        prompt: '【第 2 步 / 共 5 步】请输入请求头（JSON 格式）\n\n' +
-            '获取方法：F12 → Network → 点击请求 → Headers → Request Headers → 复制 Cookie / Authorization\n' +
-            '格式示例：{"Cookie": "session=abc123", "Authorization": "Bearer sk-xxx"}',
-        placeHolder: '{"Cookie": "your_cookie_value"}',
-        value: currentHeadersStr,
-        validateInput: (value) => {
-            if (!value || value.trim() === '') {
-                return '请求头不能为空，请输入 JSON 对象';
-            }
-            try {
-                const parsed = JSON.parse(value);
-                if (typeof parsed !== 'object' || Array.isArray(parsed)) {
-                    return '请求头必须是 JSON 对象（键值对格式）';
-                }
+    // 找到对应的平台配置
+    const profile = PLATFORM_PROFILES.find(p => p.label === selectedPlatform.label);
+    if (!profile) {
+        vscode.window.showErrorMessage('未找到平台配置');
+        return;
+    }
+
+    let apiUrl = profile.apiUrl;
+    let jsonPath = profile.jsonPath;
+
+    // ---- 如果是自定义平台，需要手动输入 API 地址和 JSON 路径 ----
+    if (profile.label.includes('自定义')) {
+        const customUrl = await vscode.window.showInputBox({
+            prompt: '请输入 API 地址（HTTP GET 请求的 URL）',
+            placeHolder: 'https://api.example.com/tokens/balance',
+            value: config.get<string>('apiUrl', ''),
+            validateInput: (value) => {
+                if (!value || value.trim() === '') { return 'API 地址不能为空'; }
+                if (!value.startsWith('http://') && !value.startsWith('https://')) { return '必须以 http:// 或 https:// 开头'; }
                 return null;
-            } catch {
-                return 'JSON 格式不正确，请检查语法（注意引号和逗号）';
-            }
-        },
-    });
-    if (headersStr === undefined) {
-        vscode.window.showInformationMessage('Token Viewer 配置已取消');
-        return;
-    }
-    let headers: Record<string, string> = {};
-    try {
-        headers = JSON.parse(headersStr);
-    } catch {
-        vscode.window.showErrorMessage('请求头 JSON 解析失败，配置未保存');
-        return;
+            },
+        });
+        if (customUrl === undefined) { vscode.window.showInformationMessage('Token Viewer 配置已取消'); return; }
+        apiUrl = customUrl;
+
+        const customPath = await vscode.window.showInputBox({
+            prompt: '请输入 JSON 解析路径\n\n支持：简单路径(data.remaining)、数组索引(data.items[0].limit)、减法(data.items[0].limit - data.items[0].used)',
+            placeHolder: 'data.remaining',
+            value: config.get<string>('jsonPath', ''),
+            validateInput: (value) => {
+                if (!value || value.trim() === '') { return '解析路径不能为空'; }
+                if (/[^\w.\[\] \-]/.test(value)) { return '路径包含非法字符'; }
+                return null;
+            },
+        });
+        if (customPath === undefined) { vscode.window.showInformationMessage('Token Viewer 配置已取消'); return; }
+        jsonPath = customPath;
     }
 
-    // ---- 第 3 步：配置 JSON 解析路径 ----
-    const currentJsonPath = config.get<string>('jsonPath', '');
-    const jsonPath = await vscode.window.showInputBox({
-        prompt: '【第 3 步 / 共 5 步】请输入 JSON 解析路径\n\n' +
-            '支持三种格式：\n' +
-            '  ① 简单路径：data.remaining\n' +
-            '  ② 数组索引：data.usage.items[0].limit\n' +
-            '  ③ 减法表达式：data.usage.items[0].limit - data.usage.items[0].used\n\n' +
-            '获取方法：F12 → Network → 点击请求 → Response → 查看 JSON 结构',
-        placeHolder: 'data.usage.items[0].limit - data.usage.items[0].used',
-        value: currentJsonPath,
+    // ---- 第 2 步：粘贴 Cookie / API Key（唯一需要用户手动操作的步骤） ----
+    const currentHeaders = config.get<Record<string, string>>('headers', {});
+    const currentHeaderValue = currentHeaders[profile.headerKey] || '';
+
+    const headerValue = await vscode.window.showInputBox({
+        prompt: `【第 2 步 / 共 2 步】${profile.headerHint}\n\n` +
+            `获取方法：浏览器登录平台 → F12 → Network → 找到请求 → Headers → 复制 ${profile.headerKey} 的值`,
+        placeHolder: profile.headerKey === 'Cookie' ? '粘贴完整的 Cookie 字符串...' : 'Bearer sk-xxxxx',
+        value: currentHeaderValue,
+        password: profile.headerKey === 'Authorization',
         validateInput: (value) => {
             if (!value || value.trim() === '') {
-                return '解析路径不能为空';
-            }
-            // 允许：字母、数字、下划线、点号、方括号、空格、减号
-            if (/[^\w.\[\] \-]/.test(value)) {
-                return '路径包含非法字符，只允许字母、数字、下划线、点号、方括号、空格和减号';
+                return `${profile.headerKey} 不能为空`;
             }
             return null;
         },
     });
-    if (jsonPath === undefined) {
+
+    if (headerValue === undefined) {
         vscode.window.showInformationMessage('Token Viewer 配置已取消');
         return;
     }
 
-    // ---- 第 4 步：配置刷新间隔 ----
-    const currentInterval = config.get<number>('refreshInterval', 60);
-    const intervalStr = await vscode.window.showInputBox({
-        prompt: '【第 4 步 / 共 5 步】请输入自动刷新间隔（单位：秒，最小值 10）',
-        placeHolder: '60',
-        value: String(currentInterval),
-        validateInput: (value) => {
-            const num = Number(value);
-            if (isNaN(num) || !Number.isInteger(num)) {
-                return '请输入有效的整数';
-            }
-            if (num < 10) {
-                return '刷新间隔不能小于 10 秒';
-            }
-            return null;
-        },
-    });
-    if (intervalStr === undefined) {
-        vscode.window.showInformationMessage('Token Viewer 配置已取消');
-        return;
-    }
-    const refreshInterval = Number(intervalStr);
+    // 构建请求头
+    const headers: Record<string, string> = {};
+    headers[profile.headerKey] = headerValue;
 
-    // ---- 第 5 步：配置告警阈值 ----
-    const currentThreshold = config.get<number>('alertThreshold', 100);
-    const thresholdStr = await vscode.window.showInputBox({
-        prompt: '【第 5 步 / 共 5 步】请输入告警阈值（当剩余 Token ≤ 此值时弹出警告）',
-        placeHolder: '100',
-        value: String(currentThreshold),
-        validateInput: (value) => {
-            const num = Number(value);
-            if (isNaN(num) || !Number.isInteger(num) || num < 0) {
-                return '请输入有效的非负整数';
-            }
-            return null;
-        },
-    });
-    if (thresholdStr === undefined) {
-        vscode.window.showInformationMessage('Token Viewer 配置已取消');
-        return;
-    }
-    const alertThreshold = Number(thresholdStr);
-
-    // ---- 保存所有配置 ----
+    // ---- 保存配置 ----
     try {
         await config.update('apiUrl', apiUrl, vscode.ConfigurationTarget.Global);
         await config.update('headers', headers, vscode.ConfigurationTarget.Global);
         await config.update('jsonPath', jsonPath, vscode.ConfigurationTarget.Global);
-        await config.update('refreshInterval', refreshInterval, vscode.ConfigurationTarget.Global);
-        await config.update('alertThreshold', alertThreshold, vscode.ConfigurationTarget.Global);
 
         outputChannel.appendLine('[Token Viewer] 配置已通过向导更新:');
+        outputChannel.appendLine(`  平台: ${selectedPlatform.label}`);
         outputChannel.appendLine(`  API 地址: ${apiUrl}`);
-        outputChannel.appendLine(`  请求头: ${JSON.stringify(headers)}`);
+        outputChannel.appendLine(`  请求头: { "${profile.headerKey}": "***" }`);
         outputChannel.appendLine(`  JSON 路径: ${jsonPath}`);
-        outputChannel.appendLine(`  刷新间隔: ${refreshInterval} 秒`);
-        outputChannel.appendLine(`  告警阈值: ${alertThreshold}`);
 
         vscode.window.showInformationMessage(
-            `✅ Token Viewer 配置已保存！\n` +
-            `API: ${apiUrl}\n` +
-            `刷新间隔: ${refreshInterval}s | 告警阈值: ${alertThreshold}`
+            `✅ Token Viewer 配置完成！\n平台: ${selectedPlatform.description}\n正在刷新...`
         );
 
         // 立即刷新一次以验证配置
