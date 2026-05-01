@@ -183,56 +183,67 @@ const PLATFORM_PROFILES: PlatformProfile[] = [
 ];
 
 // ============================================================
-// 交互式配置向导 - 平台自动识别，只需粘贴 Cookie
+// URL 自动识别 - 根据 URL 匹配已知平台
+// ============================================================
+function detectPlatformFromUrl(url: string): PlatformProfile | undefined {
+    const lowerUrl = url.toLowerCase();
+    for (const profile of PLATFORM_PROFILES) {
+        if (profile.apiUrl) {
+            try {
+                const hostname = new URL(profile.apiUrl).hostname;
+                if (lowerUrl.includes(hostname)) {
+                    return profile;
+                }
+            } catch {
+                // 跳过无效 URL
+            }
+        }
+    }
+    return undefined;
+}
+
+// ============================================================
+// 交互式配置向导 - 输入 URL 自动识别平台，只需粘贴 Cookie
 // ============================================================
 async function configureSettings(context: vscode.ExtensionContext): Promise<void> {
     const config = vscode.workspace.getConfiguration('tokenViewer');
 
-    // ---- 第 1 步：选择平台 ----
-    const platformItems: vscode.QuickPickItem[] = PLATFORM_PROFILES.map(p => ({
-        label: p.label,
-        description: p.description,
-    }));
-
-    const selectedPlatform = await vscode.window.showQuickPick(platformItems, {
-        placeHolder: '选择你要监控的 AI 平台（选择后自动填充 API 地址和 JSON 路径）',
-        title: 'Token Viewer 配置 - 第 1 步：选择平台',
+    // ---- 第 1 步：输入 API 地址（自动识别平台） ----
+    const currentApiUrl = config.get<string>('apiUrl', '');
+    const apiUrl = await vscode.window.showInputBox({
+        prompt: '【第 1 步 / 共 2 步】请输入 API 地址\n\n' +
+            '支持自动识别以下平台：小米MiMo、OpenAI、DeepSeek、智谱AI、零一万物等\n' +
+            '输入 URL 后会自动填充 JSON 解析路径\n\n' +
+            '获取方法：浏览器登录平台 → F12 → Network → 找到请求 → 复制 Request URL',
+        placeHolder: 'https://platform.xiaomimimo.com/api/v1/tokenPlan/usage',
+        value: currentApiUrl,
+        validateInput: (value) => {
+            if (!value || value.trim() === '') { return 'API 地址不能为空'; }
+            if (!value.startsWith('http://') && !value.startsWith('https://')) { return '必须以 http:// 或 https:// 开头'; }
+            return null;
+        },
     });
+    if (apiUrl === undefined) { vscode.window.showInformationMessage('Token Viewer 配置已取消'); return; }
 
-    if (!selectedPlatform) {
-        vscode.window.showInformationMessage('Token Viewer 配置已取消');
-        return;
-    }
+    // ---- 自动识别平台 ----
+    const detectedProfile = detectPlatformFromUrl(apiUrl);
+    let jsonPath = config.get<string>('jsonPath', '');
+    let headerKey = 'Cookie';
+    let headerHint = '请粘贴 Cookie 或 API Key';
 
-    // 找到对应的平台配置
-    const profile = PLATFORM_PROFILES.find(p => p.label === selectedPlatform.label);
-    if (!profile) {
-        vscode.window.showErrorMessage('未找到平台配置');
-        return;
-    }
-
-    let apiUrl = profile.apiUrl;
-    let jsonPath = profile.jsonPath;
-
-    // ---- 如果是自定义平台，需要手动输入 API 地址和 JSON 路径 ----
-    if (profile.label.includes('自定义')) {
-        const customUrl = await vscode.window.showInputBox({
-            prompt: '请输入 API 地址（HTTP GET 请求的 URL）',
-            placeHolder: 'https://api.example.com/tokens/balance',
-            value: config.get<string>('apiUrl', ''),
-            validateInput: (value) => {
-                if (!value || value.trim() === '') { return 'API 地址不能为空'; }
-                if (!value.startsWith('http://') && !value.startsWith('https://')) { return '必须以 http:// 或 https:// 开头'; }
-                return null;
-            },
-        });
-        if (customUrl === undefined) { vscode.window.showInformationMessage('Token Viewer 配置已取消'); return; }
-        apiUrl = customUrl;
-
+    if (detectedProfile) {
+        // 自动填充已识别平台的配置
+        jsonPath = detectedProfile.jsonPath;
+        headerKey = detectedProfile.headerKey;
+        headerHint = detectedProfile.headerHint;
+        vscode.window.showInformationMessage(`🔍 已识别平台: ${detectedProfile.description}，JSON 路径已自动填充`);
+    } else {
+        // 未识别的平台，需要手动输入 JSON 路径
         const customPath = await vscode.window.showInputBox({
-            prompt: '请输入 JSON 解析路径\n\n支持：简单路径(data.remaining)、数组索引(data.items[0].limit)、减法(data.items[0].limit - data.items[0].used)',
+            prompt: '未识别此平台，请手动输入 JSON 解析路径\n\n' +
+                '支持：简单路径(data.remaining)、数组索引(data.items[0].limit)、减法(data.items[0].limit - data.items[0].used)',
             placeHolder: 'data.remaining',
-            value: config.get<string>('jsonPath', ''),
+            value: jsonPath,
             validateInput: (value) => {
                 if (!value || value.trim() === '') { return '解析路径不能为空'; }
                 if (/[^\w.\[\] \-]/.test(value)) { return '路径包含非法字符'; }
@@ -243,32 +254,26 @@ async function configureSettings(context: vscode.ExtensionContext): Promise<void
         jsonPath = customPath;
     }
 
-    // ---- 第 2 步：粘贴 Cookie / API Key（唯一需要用户手动操作的步骤） ----
+    // ---- 第 2 步：粘贴 Cookie / API Key ----
     const currentHeaders = config.get<Record<string, string>>('headers', {});
-    const currentHeaderValue = currentHeaders[profile.headerKey] || '';
+    const currentHeaderValue = currentHeaders[headerKey] || '';
 
     const headerValue = await vscode.window.showInputBox({
-        prompt: `【第 2 步 / 共 2 步】${profile.headerHint}\n\n` +
-            `获取方法：浏览器登录平台 → F12 → Network → 找到请求 → Headers → 复制 ${profile.headerKey} 的值`,
-        placeHolder: profile.headerKey === 'Cookie' ? '粘贴完整的 Cookie 字符串...' : 'Bearer sk-xxxxx',
+        prompt: `【第 2 步 / 共 2 步】${headerHint}\n\n` +
+            `获取方法：浏览器登录平台 → F12 → Network → 找到请求 → Headers → 复制 ${headerKey} 的值`,
+        placeHolder: headerKey === 'Cookie' ? '粘贴完整的 Cookie 字符串...' : 'Bearer sk-xxxxx',
         value: currentHeaderValue,
-        password: profile.headerKey === 'Authorization',
+        password: headerKey === 'Authorization',
         validateInput: (value) => {
-            if (!value || value.trim() === '') {
-                return `${profile.headerKey} 不能为空`;
-            }
+            if (!value || value.trim() === '') { return `${headerKey} 不能为空`; }
             return null;
         },
     });
-
-    if (headerValue === undefined) {
-        vscode.window.showInformationMessage('Token Viewer 配置已取消');
-        return;
-    }
+    if (headerValue === undefined) { vscode.window.showInformationMessage('Token Viewer 配置已取消'); return; }
 
     // 构建请求头
     const headers: Record<string, string> = {};
-    headers[profile.headerKey] = headerValue;
+    headers[headerKey] = headerValue;
 
     // ---- 保存配置 ----
     try {
@@ -276,14 +281,15 @@ async function configureSettings(context: vscode.ExtensionContext): Promise<void
         await config.update('headers', headers, vscode.ConfigurationTarget.Global);
         await config.update('jsonPath', jsonPath, vscode.ConfigurationTarget.Global);
 
+        const platformName = detectedProfile ? detectedProfile.description : '自定义平台';
         outputChannel.appendLine('[Token Viewer] 配置已通过向导更新:');
-        outputChannel.appendLine(`  平台: ${selectedPlatform.label}`);
+        outputChannel.appendLine(`  平台: ${platformName}`);
         outputChannel.appendLine(`  API 地址: ${apiUrl}`);
-        outputChannel.appendLine(`  请求头: { "${profile.headerKey}": "***" }`);
+        outputChannel.appendLine(`  请求头: { "${headerKey}": "***" }`);
         outputChannel.appendLine(`  JSON 路径: ${jsonPath}`);
 
         vscode.window.showInformationMessage(
-            `✅ Token Viewer 配置完成！\n平台: ${selectedPlatform.description}\n正在刷新...`
+            `✅ Token Viewer 配置完成！\n平台: ${platformName}\n正在刷新...`
         );
 
         // 立即刷新一次以验证配置
