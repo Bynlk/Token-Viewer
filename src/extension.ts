@@ -19,6 +19,8 @@ let outputChannel: vscode.OutputChannel;
 let refreshTimer: NodeJS.Timeout | undefined;
 let lastTokenCount: number | undefined;
 let alertShown: boolean = false;
+let cookieErrorCount: number = 0;  // 连续 Cookie 错误计数
+let isRefreshingCookie: boolean = false;  // 是否正在刷新 Cookie
 
 // ============================================================
 // 激活函数 - 插件入口
@@ -96,6 +98,7 @@ interface PlatformProfile {
     jsonPath: string;        // JSON 解析路径
     headerHint: string;      // 请求头提示（告诉用户需要什么）
     headerKey: string;       // 请求头的键名（如 "Cookie"、"Authorization"）
+    loginUrl: string;        // 登录页面 URL（Cookie 过期时自动打开）
 }
 
 /** 内置支持的平台列表 */
@@ -107,6 +110,7 @@ const PLATFORM_PROFILES: PlatformProfile[] = [
         jsonPath: 'data.usage.items[0].limit - data.usage.items[0].used',
         headerHint: '请从浏览器复制完整的 Cookie 字符串',
         headerKey: 'Cookie',
+        loginUrl: 'https://platform.xiaomimimo.com/console/plan-manage',
     },
     {
         label: '$(globe) OpenAI',
@@ -115,6 +119,7 @@ const PLATFORM_PROFILES: PlatformProfile[] = [
         jsonPath: 'total_granted - total_used',
         headerHint: '请从浏览器复制 Cookie，或输入 API Key（Bearer sk-xxx）',
         headerKey: 'Authorization',
+        loginUrl: 'https://platform.openai.com/settings/organization/billing/overview',
     },
     {
         label: '$(globe) DeepSeek',
@@ -123,6 +128,7 @@ const PLATFORM_PROFILES: PlatformProfile[] = [
         jsonPath: 'balance_infos[0].total_balance',
         headerHint: '请输入 API Key（Bearer sk-xxx）',
         headerKey: 'Authorization',
+        loginUrl: 'https://platform.deepseek.com/api_keys',
     },
     {
         label: '$(globe) 通义千问',
@@ -131,6 +137,7 @@ const PLATFORM_PROFILES: PlatformProfile[] = [
         jsonPath: '',
         headerHint: '请输入 API Key（Bearer sk-xxx）',
         headerKey: 'Authorization',
+        loginUrl: 'https://dashscope.console.aliyun.com/',
     },
     {
         label: '$(globe) Claude (Anthropic)',
@@ -139,6 +146,7 @@ const PLATFORM_PROFILES: PlatformProfile[] = [
         jsonPath: '',
         headerHint: '请从浏览器复制 Cookie 或输入 API Key',
         headerKey: 'Cookie',
+        loginUrl: 'https://console.anthropic.com/',
     },
     {
         label: '$(globe) 豆包 (字节跳动)',
@@ -147,6 +155,7 @@ const PLATFORM_PROFILES: PlatformProfile[] = [
         jsonPath: '',
         headerHint: '请从浏览器复制完整的 Cookie 字符串',
         headerKey: 'Cookie',
+        loginUrl: 'https://www.doubao.com/',
     },
     {
         label: '$(globe) Kimi (月之暗面)',
@@ -155,6 +164,7 @@ const PLATFORM_PROFILES: PlatformProfile[] = [
         jsonPath: '',
         headerHint: '请从浏览器复制完整的 Cookie 字符串',
         headerKey: 'Cookie',
+        loginUrl: 'https://kimi.moonshot.cn/',
     },
     {
         label: '$(globe) 智谱 AI',
@@ -163,6 +173,7 @@ const PLATFORM_PROFILES: PlatformProfile[] = [
         jsonPath: 'data.total_quota - data.used_quota',
         headerHint: '请输入 API Key（Bearer xxx）',
         headerKey: 'Authorization',
+        loginUrl: 'https://open.bigmodel.cn/',
     },
     {
         label: '$(globe) 零一万物',
@@ -171,6 +182,7 @@ const PLATFORM_PROFILES: PlatformProfile[] = [
         jsonPath: 'data.total_granted - data.used_granted',
         headerHint: '请输入 API Key（Bearer xxx）',
         headerKey: 'Authorization',
+        loginUrl: 'https://platform.lingyiwanwu.com/',
     },
     {
         label: '$(edit) 自定义平台',
@@ -179,6 +191,7 @@ const PLATFORM_PROFILES: PlatformProfile[] = [
         jsonPath: '',
         headerHint: '请输入请求头（JSON 格式，如 {"Cookie": "xxx"}）',
         headerKey: '',
+        loginUrl: '',
     },
 ];
 
@@ -393,7 +406,8 @@ async function fetchTokenCount(context: vscode.ExtensionContext): Promise<void> 
             return;
         }
 
-        // 成功获取 Token 数量
+        // ✅ 成功获取 Token 数量 - 重置 Cookie 错误计数
+        cookieErrorCount = 0;
         lastTokenCount = tokenNum;
 
         // 持久化存储
@@ -423,10 +437,132 @@ async function fetchTokenCount(context: vscode.ExtensionContext): Promise<void> 
         outputChannel.appendLine(`[Token Viewer] 成功获取 Token 数量: ${tokenNum}`);
 
     } catch (error) {
-        handleFetchError(
-            error instanceof Error ? error.message : String(error),
-            undefined
+        const errorMsg = error instanceof Error ? error.message : String(error);
+
+        // 检测是否为 Cookie/认证相关的错误
+        if (isAuthError(errorMsg)) {
+            cookieErrorCount++;
+            outputChannel.appendLine(`[Token Viewer] 检测到认证错误 (连续第 ${cookieErrorCount} 次): ${errorMsg}`);
+
+            // 连续 2 次认证错误，触发自动更新 Cookie 流程
+            if (cookieErrorCount >= 2 && !isRefreshingCookie) {
+                await triggerCookieRefresh(context);
+            } else {
+                handleFetchError(errorMsg, '可能是 Cookie/API Key 已过期，连续失败 2 次后将自动打开登录页面');
+            }
+        } else {
+            handleFetchError(errorMsg, undefined);
+        }
+    }
+}
+
+// ============================================================
+// 认证错误检测 - 判断是否为 Cookie/API Key 过期
+// ============================================================
+function isAuthError(message: string): boolean {
+    const lowerMsg = message.toLowerCase();
+    // HTTP 401/403 是常见的认证失败状态码
+    if (lowerMsg.includes('http 401') || lowerMsg.includes('http 403')) {
+        return true;
+    }
+    // 常见的认证错误关键词
+    const authKeywords = [
+        'unauthorized', 'forbidden', 'token expired', 'token invalid',
+        'session expired', 'cookie expired', 'login required',
+        'authentication required', 'access denied', 'invalid token',
+        'expired token', 'not authenticated', '未登录', '登录已过期',
+        '认证失败', '授权失败', '请重新登录',
+    ];
+    return authKeywords.some(keyword => lowerMsg.includes(keyword));
+}
+
+// ============================================================
+// Cookie 过期自动更新流程
+// 1. 打开浏览器让用户登录
+// 2. 弹出输入框让用户粘贴新的 Cookie
+// 3. 自动保存并重新刷新
+// ============================================================
+async function triggerCookieRefresh(context: vscode.ExtensionContext): Promise<void> {
+    if (isRefreshingCookie) { return; }
+    isRefreshingCookie = true;
+
+    try {
+        const currentConfig = getConfig();
+        const vscodeConfig = vscode.workspace.getConfiguration('tokenViewer');
+
+        // 根据 API URL 找到对应的平台配置
+        const detectedProfile = detectPlatformFromUrl(currentConfig.apiUrl);
+        const platformName = detectedProfile ? detectedProfile.description : '当前平台';
+        const loginUrl = detectedProfile?.loginUrl || '';
+
+        // 更新状态栏提示
+        statusBarItem.text = '$(warning) Token: Cookie 过期 ⚠';
+        statusBarItem.tooltip = 'Cookie/API Key 已过期，正在等待更新...';
+
+        outputChannel.appendLine(`[Token Viewer] 🔔 检测到 Cookie 过期，触发自动更新流程`);
+
+        // 如果有登录页面 URL，自动打开浏览器
+        if (loginUrl) {
+            outputChannel.appendLine(`[Token Viewer] 正在打开登录页面: ${loginUrl}`);
+            vscode.env.openExternal(vscode.Uri.parse(loginUrl));
+        }
+
+        // 弹出提示，引导用户操作
+        const action = await vscode.window.showWarningMessage(
+            `⚠️ ${platformName} 的 Cookie/API Key 已过期！\n\n` +
+            (loginUrl ? `已打开登录页面，请在浏览器中登录后，复制新的 Cookie/API Key。\n` : `请在浏览器中登录后，复制新的 Cookie/API Key。\n`) +
+            `然后点击「更新 Cookie」按钮。`,
+            '更新 Cookie',
+            '稍后再说'
         );
+
+        if (action !== '更新 Cookie') {
+            outputChannel.appendLine('[Token Viewer] 用户选择稍后更新 Cookie');
+            isRefreshingCookie = false;
+            return;
+        }
+
+        // 弹出输入框让用户粘贴新的 Cookie/API Key
+        const headerKey = detectedProfile?.headerKey || 'Cookie';
+        const headerHint = detectedProfile?.headerHint || '请粘贴新的 Cookie 或 API Key';
+
+        const newHeaderValue = await vscode.window.showInputBox({
+            prompt: `请粘贴新的 ${headerKey}\n\n${headerHint}`,
+            placeHolder: headerKey === 'Cookie' ? '粘贴新的 Cookie 字符串...' : 'Bearer sk-xxxxx',
+            password: headerKey === 'Authorization',
+            validateInput: (value) => {
+                if (!value || value.trim() === '') { return `${headerKey} 不能为空`; }
+                return null;
+            },
+        });
+
+        if (newHeaderValue === undefined) {
+            outputChannel.appendLine('[Token Viewer] 用户取消了 Cookie 更新');
+            isRefreshingCookie = false;
+            return;
+        }
+
+        // 保存新的 Cookie/API Key
+        const newHeaders: Record<string, string> = {};
+        newHeaders[headerKey] = newHeaderValue;
+        await vscodeConfig.update('headers', newHeaders, vscode.ConfigurationTarget.Global);
+
+        outputChannel.appendLine(`[Token Viewer] ✅ ${headerKey} 已更新，正在重新验证...`);
+
+        // 重置错误计数
+        cookieErrorCount = 0;
+
+        // 立即刷新一次验证新 Cookie
+        await fetchTokenCount(context);
+
+        vscode.window.showInformationMessage(`✅ ${headerKey} 已更新，Token 数据已刷新！`);
+
+    } catch (error) {
+        const msg = error instanceof Error ? error.message : String(error);
+        outputChannel.appendLine(`[Token Viewer] Cookie 更新流程出错: ${msg}`);
+        vscode.window.showErrorMessage(`Cookie 更新失败: ${msg}`);
+    } finally {
+        isRefreshingCookie = false;
     }
 }
 
