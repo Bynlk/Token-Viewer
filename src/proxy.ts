@@ -74,30 +74,44 @@ export function startProxy(app: AppState, context: vscode.ExtensionContext): voi
     const server = http.createServer();
 
     server.on('request', (req: http.IncomingMessage, res: http.ServerResponse) => {
-        const host = req.headers.host || '';
-        if (host.includes('platform.xiaomimimo.com') && req.headers.cookie) {
-            onCookieCaptured(app, req.headers.cookie, context);
+        try {
+            const host = req.headers.host || '';
+            if (host.includes('platform.xiaomimimo.com') && req.headers.cookie) {
+                onCookieCaptured(app, req.headers.cookie, context);
+            }
+            const urlObj = new URL(req.url || '/', `http://${host}`);
+            const options = {
+                hostname: urlObj.hostname,
+                port: urlObj.port || 80,
+                path: urlObj.pathname + urlObj.search,
+                method: req.method,
+                headers: req.headers,
+                agent: false as const,
+                timeout: 30000,
+            };
+            const proxyReq = bypassSystemProxy(() => http.request(options, (proxyRes: http.IncomingMessage) => {
+                res.writeHead(proxyRes.statusCode || 502, proxyRes.headers);
+                proxyRes.pipe(res);
+            }));
+            proxyReq.on('error', () => { try { res.writeHead(502); res.end(); } catch { /* ignore */ } });
+            proxyReq.on('timeout', () => { proxyReq.destroy(); try { res.writeHead(504); res.end(); } catch { /* ignore */ } });
+            req.pipe(proxyReq);
+        } catch (err) {
+            app.outputChannel.appendLine(`[Token Viewer] 请求处理错误: ${err instanceof Error ? err.message : String(err)}`);
+            try { res.writeHead(400); res.end(); } catch { /* ignore */ }
         }
-        const urlObj = new URL(req.url || '/', `http://${host}`);
-        const options = {
-            hostname: urlObj.hostname,
-            port: urlObj.port || 80,
-            path: urlObj.pathname + urlObj.search,
-            method: req.method,
-            headers: req.headers,
-            agent: false as const,
-        };
-        const proxyReq = bypassSystemProxy(() => http.request(options, (proxyRes: http.IncomingMessage) => {
-            res.writeHead(proxyRes.statusCode || 502, proxyRes.headers);
-            proxyRes.pipe(res);
-        }));
-        proxyReq.on('error', () => { res.writeHead(502); res.end(); });
-        req.pipe(proxyReq);
     });
 
     server.on('connect', (req: http.IncomingMessage, clientSocket: net.Socket, head: Buffer) => {
-        const [targetHost, targetPortStr] = (req.url || '').split(':');
-        const targetPort = parseInt(targetPortStr, 10) || 443;
+        const url = req.url || '';
+        const colonIdx = url.lastIndexOf(':');
+        const targetHost = colonIdx > 0 ? url.substring(0, colonIdx) : url;
+        const targetPort = colonIdx > 0 ? parseInt(url.substring(colonIdx + 1), 10) || 443 : 443;
+
+        if (!targetHost) {
+            try { clientSocket.end('HTTP/1.1 400 Bad Request\r\n\r\n'); } catch { /* ignore */ }
+            return;
+        }
 
         if (targetHost === 'platform.xiaomimimo.com') {
             handleConnectIntercept(app, clientSocket, targetHost, targetPort, head, context);

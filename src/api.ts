@@ -352,7 +352,11 @@ export async function fetchTodayData(headers: Record<string, string>, outputChan
         const json = JSON.parse(responseBody);
 
         if (json.code !== 0 || !Array.isArray(json.data)) {
-            outputChannel?.appendLine(`[Token Viewer] 用量 API 返回异常: code=${json.code}, message=${json.message}`);
+            const errMsg = json.message || '未知错误';
+            outputChannel?.appendLine(`[Token Viewer] 用量 API 返回异常: code=${json.code}, message=${errMsg}`);
+            if (json.code === 401 || json.code === 403) {
+                throw new Error(`认证失败: ${errMsg}`);
+            }
             return null;
         }
 

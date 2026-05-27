@@ -125,7 +125,9 @@
         "tokenViewer.proxyPort": {
           "type": "number",
           "default": 9527,
-          "description": "MITM 代理端口号"
+          "minimum": 1024,
+          "maximum": 65535,
+          "description": "MITM 代理端口号（1024-65535）"
         },
         "tokenViewer.monthlyBudget": {
           "type": "number",

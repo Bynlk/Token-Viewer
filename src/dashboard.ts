@@ -3,16 +3,26 @@ import * as path from 'path';
 import { AppState, MODEL_RATES, DailySnapshot, ModelUsage } from './types';
 import { formatCompact, calcCredits, getShanghaiTime } from './utils';
 import { loadHistory, loadRequestLogs, loadTeamSnapshots, getChartJsPath, isChartJsDownloaded, downloadChartJs } from './storage';
+import * as fs from 'fs';
 import { fetchTodayData, getConfig } from './api';
 
 // ============================================================
 // Token Viewer - Webview Dashboard
 // ============================================================
 
-export function openDashboard(app: AppState, context: vscode.ExtensionContext): void {
+export async function openDashboard(app: AppState, context: vscode.ExtensionContext): Promise<void> {
     if (app.dashboardPanel) {
         app.dashboardPanel.reveal(vscode.ViewColumn.One);
         return;
+    }
+
+    // 确保 Chart.js 已下载
+    if (!isChartJsDownloaded()) {
+        app.outputChannel.appendLine('[Token Viewer] 正在下载 Chart.js...');
+        const downloaded = await downloadChartJs();
+        if (!downloaded) {
+            vscode.window.showWarningMessage('Chart.js 下载失败，图表功能将不可用。请检查网络连接。');
+        }
     }
 
     app.dashboardPanel = vscode.window.createWebviewPanel(
@@ -162,9 +172,11 @@ export function calculateSavings(models: Record<string, ModelUsage>): SavingsRes
 // ============================================================
 
 function getDashboardHtml(app: AppState, context: vscode.ExtensionContext): string {
-    const chartJsUri = app.dashboardPanel!.webview.asWebviewUri(
-        vscode.Uri.file(getChartJsPath())
-    );
+    const chartJsPath = getChartJsPath();
+    const hasChartJs = fs.existsSync(chartJsPath);
+    const chartJsUri = hasChartJs
+        ? app.dashboardPanel!.webview.asWebviewUri(vscode.Uri.file(chartJsPath))
+        : null;
     const nonce = getNonce();
 
     return `<!DOCTYPE html>
@@ -285,10 +297,11 @@ function getDashboardHtml(app: AppState, context: vscode.ExtensionContext): stri
     <div id="today-section"></div>
     <div id="team-section"></div>
 
-    <script nonce="${nonce}" src="${chartJsUri}"></script>
+    ${chartJsUri ? `<script nonce="${nonce}" src="${chartJsUri}"></script>` : ''}
     <script nonce="${nonce}">
         const vscode = acquireVsCodeApi();
         let charts = {};
+        const hasChartJs = ${hasChartJs ? 'true' : 'false'};
 
         function loadData(days) {
             document.querySelectorAll('.controls button').forEach(b => b.classList.remove('active'));
@@ -337,6 +350,11 @@ function getDashboardHtml(app: AppState, context: vscode.ExtensionContext): stri
             charts = {};
             const container = document.getElementById('charts');
             container.innerHTML = '';
+
+            if (!hasChartJs) {
+                container.innerHTML = '<div class="chart-container"><h3>图表不可用</h3><p>Chart.js 未能加载，请检查网络连接后重试。</p></div>';
+                return;
+            }
 
             if (data.snapshots.length === 0) return;
 

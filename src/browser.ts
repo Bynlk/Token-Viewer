@@ -73,6 +73,7 @@ export async function captureCookieViaBrowser(app: AppState, context: vscode.Ext
 
         const clicked = await vscode.window.showInformationMessage(
             '请在浏览器中完成登录，登录成功后点击下方按钮',
+            { modal: false },
             '我已登录'
         );
 
@@ -86,7 +87,8 @@ export async function captureCookieViaBrowser(app: AppState, context: vscode.Ext
 
         app.outputChannel.appendLine('[Token Viewer] 用户确认登录，正在提取 Cookie...');
 
-        await new Promise(r => setTimeout(r, 2000));
+        // 等待页面 Cookie 更新
+        await new Promise(r => setTimeout(r, 1500));
 
         let cookies: any[];
         try {
