@@ -1,8 +1,8 @@
 {
   "name": "token-viewer",
   "displayName": "Token Viewer",
-  "description": "在 VSCode 状态栏实时显示小米 MiMo 平台的剩余 Credits 额度",
-  "version": "2.0.0",
+  "description": "小米 MiMo Credits 全方位管理平台：监控、趋势分析、预算管理、多账号、团队协作",
+  "version": "2.6.0",
   "publisher": "bynlk",
   "repository": {
     "type": "git",
@@ -22,11 +22,84 @@
     "commands": [
       {
         "command": "tokenViewer.refresh",
-        "title": "Token Viewer: 刷新 Token 数量"
+        "title": "Token Viewer: 刷新 Credits",
+        "category": "Token Viewer"
       },
       {
         "command": "tokenViewer.configure",
-        "title": "Token Viewer: 配置 Cookie"
+        "title": "Token Viewer: 配置 Cookie",
+        "category": "Token Viewer"
+      },
+      {
+        "command": "tokenViewer.browserCapture",
+        "title": "Token Viewer: 浏览器自动获取 Cookie",
+        "category": "Token Viewer"
+      },
+      {
+        "command": "tokenViewer.proxyStart",
+        "title": "Token Viewer: 启动代理",
+        "category": "Token Viewer"
+      },
+      {
+        "command": "tokenViewer.proxyStop",
+        "title": "Token Viewer: 停止代理",
+        "category": "Token Viewer"
+      },
+      {
+        "command": "tokenViewer.proxyStatus",
+        "title": "Token Viewer: 代理状态",
+        "category": "Token Viewer"
+      },
+      {
+        "command": "tokenViewer.openDashboard",
+        "title": "Token Viewer: 打开用量面板",
+        "category": "Token Viewer"
+      },
+      {
+        "command": "tokenViewer.addAccount",
+        "title": "Token Viewer: 添加账号",
+        "category": "Token Viewer"
+      },
+      {
+        "command": "tokenViewer.switchAccount",
+        "title": "Token Viewer: 切换账号",
+        "category": "Token Viewer"
+      },
+      {
+        "command": "tokenViewer.removeAccount",
+        "title": "Token Viewer: 删除账号",
+        "category": "Token Viewer"
+      },
+      {
+        "command": "tokenViewer.showReport",
+        "title": "Token Viewer: 查看今日报告",
+        "category": "Token Viewer"
+      },
+      {
+        "command": "tokenViewer.recharge",
+        "title": "Token Viewer: 打开充值页面",
+        "category": "Token Viewer"
+      },
+      {
+        "command": "tokenViewer.copyUsage",
+        "title": "Token Viewer: 复制用量摘要",
+        "category": "Token Viewer"
+      },
+      {
+        "command": "tokenViewer.pauseAlerts",
+        "title": "Token Viewer: 暂停告警 1 小时",
+        "category": "Token Viewer"
+      },
+      {
+        "command": "tokenViewer.menu",
+        "title": "Token Viewer: 菜单",
+        "category": "Token Viewer",
+        "icon": "$(list-flat)"
+      },
+      {
+        "command": "tokenViewer.openSettings",
+        "title": "Token Viewer: 设置",
+        "category": "Token Viewer"
       }
     ],
     "configuration": {
@@ -48,8 +121,44 @@
           "default": 100000000,
           "minimum": 0,
           "description": "告警阈值，当剩余 Credits 小于等于此值时显示警告"
+        },
+        "tokenViewer.proxyPort": {
+          "type": "number",
+          "default": 9527,
+          "description": "MITM 代理端口号"
+        },
+        "tokenViewer.monthlyBudget": {
+          "type": "number",
+          "default": 0,
+          "minimum": 0,
+          "description": "月度 Credits 预算上限（0 = 不启用）"
+        },
+        "tokenViewer.budgetAlertLevels": {
+          "type": "array",
+          "default": [50, 80, 100],
+          "items": { "type": "number" },
+          "description": "预算告警百分比阈值"
+        },
+        "tokenViewer.teamSharePath": {
+          "type": "string",
+          "default": "",
+          "description": "团队共享目录路径（留空不启用）"
+        },
+        "tokenViewer.username": {
+          "type": "string",
+          "default": "",
+          "description": "团队共享中的用户名"
         }
       }
+    },
+    "menus": {
+      "editor/title": [
+        {
+          "command": "tokenViewer.openDashboard",
+          "when": "resourceExtname == .ts || resourceExtname == .js || resourceExtname == .json",
+          "group": "navigation@100"
+        }
+      ]
     }
   },
   "scripts": {
