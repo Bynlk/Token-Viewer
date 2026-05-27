@@ -1,9 +1,11 @@
 .vscode/**
 .vscode-test/**
 .claude/**
+.github/**
 docs/**
 src/**
 .gitignore
+.gitattributes
 tsconfig.json
 node_modules/@types/**
 node_modules/typescript/**
