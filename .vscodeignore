@@ -12,6 +12,10 @@ node_modules/typescript/**
 node_modules/undici-types/**
 **/*.ts
 **/*.map
+**/*.test.js
+**/test/**
+**/vscode-mock.js
+**/setup.js
 项目记录.md
 deepseek_markdown_*.md
 image.png
