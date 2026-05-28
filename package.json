@@ -100,6 +100,11 @@
         "command": "tokenViewer.openSettings",
         "title": "Token Viewer: 设置",
         "category": "Token Viewer"
+      },
+      {
+        "command": "tokenViewer.toggleSections",
+        "title": "Token Viewer: 选择显示板块",
+        "category": "Token Viewer"
       }
     ],
     "configuration": {
@@ -150,6 +155,23 @@
           "type": "string",
           "default": "",
           "description": "团队共享中的用户名"
+        },
+        "tokenViewer.tooltipSections": {
+          "type": "array",
+          "default": ["account", "todayUsage", "prediction", "budget", "modelRates", "github"],
+          "items": {
+            "type": "string",
+            "enum": ["account", "todayUsage", "prediction", "budget", "modelRates", "github"],
+            "enumDescriptions": [
+              "当前账号名称",
+              "今日各模型 Token/Credits 用量",
+              "基于历史数据的消耗预测",
+              "月度预算消耗百分比",
+              "各模型 Credit/Token 费率",
+              "项目 GitHub 链接"
+            ]
+          },
+          "description": "状态栏 Tooltip 中显示的板块（可拖拽排序）"
         }
       }
     },

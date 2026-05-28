@@ -8,6 +8,19 @@ import { saveDailySnapshot, loadHistory, cleanupOldRequestLogs, saveTeamSnapshot
 // Token Viewer - API 请求与数据处理
 // ============================================================
 
+/** 可选的 tooltip 板块 */
+export type TooltipSection = 'account' | 'todayUsage' | 'prediction' | 'budget' | 'modelRates' | 'github';
+
+/** 板块显示名称映射 */
+export const SECTION_LABELS: Record<TooltipSection, string> = {
+    account: '账号信息',
+    todayUsage: '今日用量',
+    prediction: '消耗预测',
+    budget: '月度预算',
+    modelRates: '消耗比例',
+    github: 'GitHub 链接',
+};
+
 /** 获取配置 */
 export function getConfig() {
     const config = vscode.workspace.getConfiguration('tokenViewer');
@@ -19,6 +32,7 @@ export function getConfig() {
         budgetAlertLevels: config.get<number[]>('budgetAlertLevels', [50, 80, 100]),
         teamSharePath: config.get<string>('teamSharePath', ''),
         username: config.get<string>('username', ''),
+        tooltipSections: config.get<TooltipSection[]>('tooltipSections', ['account', 'todayUsage', 'prediction', 'budget', 'modelRates', 'github']),
     };
 }
 
@@ -235,17 +249,22 @@ export async function fetchTokenCount(app: AppState, context: vscode.ExtensionCo
             tooltipText += `\n总量: ${totalTokens.toLocaleString('zh-CN')}（${formatCompact(totalTokens)}）`;
         }
 
+        // 按用户选择的板块生成 tooltip
+        const sections = config.tooltipSections;
+
         // 账号信息
-        const activeAccountId = context.globalState.get<string>('tokenViewer.activeAccountId');
-        if (activeAccountId) {
-            const account = getAccount(activeAccountId);
-            if (account) {
-                tooltipText = `账号: ${account.name}\n` + tooltipText;
+        if (sections.includes('account')) {
+            const activeAccountId = context.globalState.get<string>('tokenViewer.activeAccountId');
+            if (activeAccountId) {
+                const account = getAccount(activeAccountId);
+                if (account) {
+                    tooltipText = `账号: ${account.name}\n` + tooltipText;
+                }
             }
         }
 
         // 今日用量
-        if (todayData) {
+        if (sections.includes('todayUsage') && todayData) {
             const todayFormatted = formatTodayUsage(todayData.models, totalTokens);
             if (todayFormatted) {
                 tooltipText += `\n\n今日用量`;
@@ -254,14 +273,16 @@ export async function fetchTokenCount(app: AppState, context: vscode.ExtensionCo
         }
 
         // 消耗预测
-        const prediction = calculatePrediction(tokenNum);
-        if (prediction) {
-            tooltipText += `\n\n消耗预测`;
-            tooltipText += prediction;
+        if (sections.includes('prediction')) {
+            const prediction = calculatePrediction(tokenNum);
+            if (prediction) {
+                tooltipText += `\n\n消耗预测`;
+                tooltipText += prediction;
+            }
         }
 
         // 预算信息
-        if (config.monthlyBudget > 0 && todayData) {
+        if (sections.includes('budget') && config.monthlyBudget > 0 && todayData) {
             const totalCreditsUsed = Object.values(todayData.models).reduce((sum, m) => sum + m.credits, 0);
             const budgetUsedPercent = (totalCreditsUsed / config.monthlyBudget) * 100;
             tooltipText += `\n\n月度预算`;
@@ -269,12 +290,19 @@ export async function fetchTokenCount(app: AppState, context: vscode.ExtensionCo
         }
 
         // 消耗比例
-        tooltipText += `\n\n消耗比例 (Credits/Token)`;
-        for (const [model, rates] of Object.entries(MODEL_RATES)) {
-            tooltipText += `\n${model}`;
-            tooltipText += `\n缓存命中: ${rates.cacheHit} 输入: ${rates.input} 输出: ${rates.output}`;
+        if (sections.includes('modelRates')) {
+            tooltipText += `\n\n消耗比例 (Credits/Token)`;
+            for (const [model, rates] of Object.entries(MODEL_RATES)) {
+                tooltipText += `\n${model}`;
+                tooltipText += `\n缓存命中: ${rates.cacheHit} 输入: ${rates.input} 输出: ${rates.output}`;
+            }
         }
-        tooltipText += `\n本项目Github:github.com/bynlk/token-viewer`;
+
+        // GitHub 链接
+        if (sections.includes('github')) {
+            tooltipText += `\n本项目Github:github.com/bynlk/token-viewer`;
+        }
+
         tooltipText += `\n\n最后更新: ${now}\n点击刷新`;
         app.statusBarItem.tooltip = tooltipText;
 

@@ -2,7 +2,7 @@ import * as vscode from 'vscode';
 import { AppState, XIAOMI_CONFIG, ModelUsage } from './types';
 import { getProxyPort } from './utils';
 import { initStorage, loadAccounts, getAccount, addAccount as storageAddAccount, removeAccount as storageRemoveAccount } from './storage';
-import { getConfig, fetchTokenCount, fetchTodayData } from './api';
+import { getConfig, fetchTokenCount, fetchTodayData, TooltipSection, SECTION_LABELS } from './api';
 import { startProxy, stopProxy, updateProxyStatusBar } from './proxy';
 import { captureCookieViaBrowser } from './browser';
 import { openDashboard } from './dashboard';
@@ -95,6 +95,8 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         vscode.commands.registerCommand('tokenViewer.openSettings', () => {
             vscode.commands.executeCommand('workbench.action.openSettings', 'tokenViewer');
         }),
+
+        vscode.commands.registerCommand('tokenViewer.toggleSections', () => toggleSections(context)),
 
         // 配置变更监听
         vscode.workspace.onDidChangeConfiguration((e) => {
@@ -383,6 +385,7 @@ async function showMenu(context: vscode.ExtensionContext): Promise<void> {
         { label: '$(browser) 浏览器获取 Cookie', description: '自动登录采集' },
         { label: '$(key) 配置 Cookie', description: '手动粘贴' },
         { label: '$(settings) 设置', description: '打开 VS Code 设置' },
+        { label: '$(list-selection) 选择显示板块', description: '自定义 Tooltip 内容' },
         { label: '$(link-external) 打开充值页面', description: 'platform.xiaomimimo.com' },
     ];
 
@@ -404,5 +407,35 @@ async function showMenu(context: vscode.ExtensionContext): Promise<void> {
     else if (label.includes('浏览器')) { captureCookieViaBrowser(app, context); }
     else if (label.includes('配置 Cookie')) { configureCookie(context); }
     else if (label.includes('设置')) { vscode.commands.executeCommand('workbench.action.openSettings', 'tokenViewer'); }
+    else if (label.includes('显示板块')) { toggleSections(context); }
     else if (label.includes('充值')) { vscode.env.openExternal(vscode.Uri.parse(XIAOMI_CONFIG.loginUrl)); }
+}
+
+// ============================================================
+// 板块选择
+// ============================================================
+
+const ALL_SECTIONS: TooltipSection[] = ['account', 'todayUsage', 'prediction', 'budget', 'modelRates', 'github'];
+
+async function toggleSections(context: vscode.ExtensionContext): Promise<void> {
+    const config = vscode.workspace.getConfiguration('tokenViewer');
+    const current = config.get<TooltipSection[]>('tooltipSections', [...ALL_SECTIONS]);
+
+    const items: vscode.QuickPickItem[] = ALL_SECTIONS.map(key => ({
+        label: SECTION_LABELS[key],
+        description: key,
+        picked: current.includes(key),
+    }));
+
+    const selected = await vscode.window.showQuickPick(items, {
+        placeHolder: '选择要在状态栏 Tooltip 中显示的板块',
+        canPickMany: true,
+    });
+
+    if (!selected) { return; }
+
+    const newSections = selected.map(item => item.description as TooltipSection);
+    await config.update('tooltipSections', newSections, vscode.ConfigurationTarget.Global);
+    vscode.window.showInformationMessage(`已更新显示板块：${newSections.length} 项`);
+    fetchTokenCount(app, context);
 }
