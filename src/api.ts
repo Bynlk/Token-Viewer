@@ -1,6 +1,6 @@
 import * as vscode from 'vscode';
 import { AppState, XIAOMI_CONFIG, MODEL_RATES, DailySnapshot, ModelUsage, UsageApiItem } from './types';
-import { formatCompact, resolveJsonPath, isAuthError, calcCredits, buildUsageUrl, getShanghaiTime } from './utils';
+import { formatCompact, resolveJsonPath, isAuthError, calcCredits, buildUsageUrl, getShanghaiTime, getUtcTime } from './utils';
 import { httpGet, httpPost } from './http';
 import { saveDailySnapshot, loadHistory, cleanupOldRequestLogs, saveTeamSnapshot, getAccount, loadMonthlyUsage } from './storage';
 
@@ -122,53 +122,16 @@ function handleFetchError(app: AppState, message: string, detail?: string): void
     app.outputChannel.appendLine('');
 }
 
-/** Cookie 过期自动更新流程 */
+/** Cookie 过期自动更新流程 — 通过浏览器自动获取 Cookie */
 export async function triggerCookieRefresh(app: AppState, context: vscode.ExtensionContext): Promise<void> {
     if (app.isRefreshingCookie) { return; }
     app.isRefreshingCookie = true;
 
     try {
-        app.outputChannel.appendLine('[Token Viewer] 🔔 Cookie 过期，触发自动更新流程');
+        app.outputChannel.appendLine('[Token Viewer] 🔔 Cookie 过期，启动浏览器自动获取');
 
-        vscode.env.openExternal(vscode.Uri.parse(XIAOMI_CONFIG.loginUrl));
-
-        const action = await vscode.window.showWarningMessage(
-            '⚠️ 小米 MiMo 的 Cookie 已过期！\n\n' +
-            '已打开登录页面，请在浏览器中登录后，复制新的 Cookie。\n' +
-            '然后点击「更新 Cookie」按钮。',
-            '更新 Cookie',
-            '稍后再说'
-        );
-
-        if (action !== '更新 Cookie') {
-            app.outputChannel.appendLine('[Token Viewer] 用户选择稍后更新 Cookie');
-            app.isRefreshingCookie = false;
-            return;
-        }
-
-        const newCookie = await vscode.window.showInputBox({
-            prompt: '请粘贴新的 Cookie\n\n获取方法：浏览器登录 → F12 → Network → Headers → 复制 Cookie',
-            placeHolder: '粘贴新的 Cookie 字符串...',
-            validateInput: (value) => {
-                if (!value || value.trim() === '') { return 'Cookie 不能为空'; }
-                return null;
-            },
-        });
-
-        if (newCookie === undefined) {
-            app.outputChannel.appendLine('[Token Viewer] 用户取消了 Cookie 更新');
-            app.isRefreshingCookie = false;
-            return;
-        }
-
-        const vscodeConfig = vscode.workspace.getConfiguration('tokenViewer');
-        await vscodeConfig.update('headers', { 'Cookie': newCookie }, vscode.ConfigurationTarget.Global);
-
-        app.outputChannel.appendLine('[Token Viewer] ✅ Cookie 已更新，正在重新验证...');
-        app.cookieErrorCount = 0;
-
-        await fetchTokenCount(app, context);
-        vscode.window.showInformationMessage('✅ Cookie 已更新，Credits 数据已刷新！');
+        const { captureCookieViaBrowser } = require('./browser');
+        await captureCookieViaBrowser(app, context);
 
     } catch (error) {
         const msg = error instanceof Error ? error.message : String(error);
@@ -306,10 +269,10 @@ export async function fetchTokenCount(app: AppState, context: vscode.ExtensionCo
             filteredTodayData = { ...todayData, models: filtered };
         }
 
-        // 保存每日快照
+        // 保存每日快照（用上海日期命名，与 loadHistory 一致）
         if (todayData) {
             const snapshot: DailySnapshot = {
-                date: todayData.date,
+                date: getShanghaiTime().dateStr,
                 credits: tokenNum,
                 totalCredits: totalTokens || 0,
                 models: todayData.models,
@@ -372,13 +335,20 @@ export async function fetchTokenCount(app: AppState, context: vscode.ExtensionCo
             }
         }
 
-        // 预算信息（按当月累计计算）
-        if (isLineShown(sections, lines, 'budgetUsed') && config.monthlyBudget > 0) {
+        // 预算信息和告警（按当月累计计算，只加载一次）
+        if (config.monthlyBudget > 0) {
             const monthlyModels = loadMonthlyUsage();
             const totalCreditsUsed = Object.values(monthlyModels).reduce((sum, m) => sum + m.credits, 0);
-            const budgetUsedPercent = (totalCreditsUsed / config.monthlyBudget) * 100;
-            tooltipText += `\n\n月度预算`;
-            tooltipText += `\n已消耗: ${formatCompact(totalCreditsUsed)} / ${formatCompact(config.monthlyBudget)} (${budgetUsedPercent.toFixed(1)}%)`;
+
+            // Tooltip 显示
+            if (isLineShown(sections, lines, 'budgetUsed')) {
+                const budgetUsedPercent = (totalCreditsUsed / config.monthlyBudget) * 100;
+                tooltipText += `\n\n月度预算`;
+                tooltipText += `\n已消耗: ${formatCompact(totalCreditsUsed)} / ${formatCompact(config.monthlyBudget)} (${budgetUsedPercent.toFixed(1)}%)`;
+            }
+
+            // 预算告警
+            checkBudgetAlerts(context, monthlyModels, config.monthlyBudget, config.budgetAlertLevels);
         }
 
         // 消耗比例
@@ -443,11 +413,6 @@ export async function fetchTokenCount(app: AppState, context: vscode.ExtensionCo
             app.alertShown = false;
         }
 
-        // 预算告警（按当月累计计算）
-        if (config.monthlyBudget > 0) {
-            const monthlyModels = loadMonthlyUsage();
-            checkBudgetAlerts(context, monthlyModels, config.monthlyBudget, config.budgetAlertLevels);
-        }
 
         // 通知 Dashboard 刷新
         if (app.dashboardPanel) {
@@ -493,8 +458,9 @@ export async function fetchTodayData(headers: Record<string, string>, outputChan
             'referer': 'https://platform.xiaomimimo.com/console/plan-manage',
             'x-timezone': 'Asia/Shanghai',
         };
-        const now = getShanghaiTime();
-        const body = JSON.stringify({ year: now.year, month: now.month });
+        // API 返回的日期为 UTC 时间，用 UTC 日期请求和筛选
+        const utc = getUtcTime();
+        const body = JSON.stringify({ year: utc.year, month: utc.month });
         const url = buildUsageUrl(headers['Cookie'] || '');
         outputChannel?.appendLine(`[Token Viewer] 请求今日用量: ${url}`);
         const responseBody = await httpPost(url, postHeaders, body);
@@ -510,8 +476,8 @@ export async function fetchTodayData(headers: Record<string, string>, outputChan
             return null;
         }
 
-        const today = now.dateStr;
-        outputChannel?.appendLine(`[Token Viewer] 今日日期(上海时区): ${today}, API 返回 ${json.data.length} 条记录`);
+        const today = utc.dateStr;
+        outputChannel?.appendLine(`[Token Viewer] 今日日期(UTC): ${today}, API 返回 ${json.data.length} 条记录`);
         const models: Record<string, ModelUsage> = {};
 
         for (const item of json.data as UsageApiItem[]) {
@@ -570,7 +536,7 @@ function formatTodayUsage(models: Record<string, ModelUsage>, totalCredits?: num
     }
 
     if ((!lineSettings || lineSettings.todayTotal) && totalCredits !== undefined && totalCredits > 0) {
-        const usedPercent = (allCredits / (totalCredits + allCredits)) * 100;
+        const usedPercent = (allCredits / totalCredits) * 100;
         output.push(`\n今日总消耗: ${allCredits.toLocaleString('zh-CN')}（${formatCompact(allCredits)}）`);
         output.push(`今日 token: ${allTotal.toLocaleString('zh-CN')}（${formatCompact(allTotal)}）`);
         output.push(`占总量: ${usedPercent.toFixed(1)}%`);

@@ -77,19 +77,23 @@ export async function captureCookieViaBrowser(app: AppState, context: vscode.Ext
         // 等待页面 Cookie 更新
         await new Promise(r => setTimeout(r, 1500));
 
-        let cookies: any[];
-        try {
-            cookies = await browser.cookies();
-        } catch {
-            const pages = await browser.pages();
-            cookies = [];
-            for (const p of pages) {
-                try {
-                    const c = await p.cookies();
-                    cookies.push(...c);
-                } catch { /* skip */ }
-            }
+        // puppeteer-core v22+: browser.cookies() 不可用，从各页面提取
+        const pages = await browser.pages();
+        let cookies: any[] = [];
+        for (const p of pages) {
+            try {
+                const c = await p.cookies();
+                cookies.push(...c);
+            } catch { /* skip closed pages */ }
         }
+        // 去重（同名同值的 cookie 可能出现在多个页面）
+        const seen = new Set<string>();
+        cookies = cookies.filter((c: any) => {
+            const key = `${c.name}=${c.value}`;
+            if (seen.has(key)) { return false; }
+            seen.add(key);
+            return true;
+        });
         const cookieStr = cookies.map((c: any) => `${c.name}=${c.value}`).join('; ');
 
         if (!cookieStr) {

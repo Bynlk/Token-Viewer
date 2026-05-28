@@ -142,3 +142,12 @@ describe('buildUsageUrl', () => {
         assert.ok(url.includes('api-platform_ph=quoted_value'));
     });
 });
+
+describe('today usage percentage formula', () => {
+    it('calculates todayCredits / totalCredits * 100', () => {
+        const allCredits = 5000;
+        const totalCredits = 100000;
+        const usedPercent = (allCredits / totalCredits) * 100;
+        assert.equal(usedPercent, 5.0);
+    });
+});

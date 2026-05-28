@@ -20,6 +20,15 @@ export function getShanghaiTime(): { year: number; month: number; dateStr: strin
     return { year, month, dateStr: `${year}-${String(month).padStart(2, '0')}-${day}`, now };
 }
 
+/** 获取 UTC 时区的当前时间信息（用于匹配 API 返回的 UTC 日期） */
+export function getUtcTime(): { year: number; month: number; dateStr: string; now: Date } {
+    const now = new Date();
+    const year = now.getUTCFullYear();
+    const month = now.getUTCMonth() + 1;
+    const day = String(now.getUTCDate()).padStart(2, '0');
+    return { year, month, dateStr: `${year}-${String(month).padStart(2, '0')}-${day}`, now };
+}
+
 /** 数字缩写格式化 */
 export function formatCompact(num: number): string {
     const abs = Math.abs(num);

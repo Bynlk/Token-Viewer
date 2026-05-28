@@ -2,7 +2,7 @@
   "name": "token-viewer",
   "displayName": "Token Viewer",
   "description": "小米 MiMo Credits 全方位管理平台：监控、趋势分析、预算管理、多账号、团队协作",
-  "version": "3.0.0",
+  "version": "3.0.3",
   "publisher": "bynlk",
   "repository": {
     "type": "git",
@@ -147,8 +147,14 @@
         },
         "tokenViewer.budgetAlertLevels": {
           "type": "array",
-          "default": [50, 80, 100],
-          "items": { "type": "number" },
+          "default": [
+            50,
+            80,
+            100
+          ],
+          "items": {
+            "type": "number"
+          },
           "description": "预算告警百分比阈值"
         },
         "tokenViewer.teamSharePath": {
@@ -278,5 +284,8 @@
     "@types/node": "^18.19.0",
     "@types/vscode": "^1.74.0",
     "typescript": "^5.3.0"
+  },
+  "dependencies": {
+    "puppeteer-core": "^22.15.0"
   }
 }
