@@ -2,7 +2,7 @@
   "name": "token-viewer",
   "displayName": "Token Viewer",
   "description": "小米 MiMo Credits 全方位管理平台：监控、趋势分析、预算管理、多账号、团队协作",
-  "version": "2.6.0",
+  "version": "2.7.0",
   "publisher": "bynlk",
   "repository": {
     "type": "git",
@@ -171,7 +171,7 @@
               "项目 GitHub 链接"
             ]
           },
-          "description": "状态栏 Tooltip 中显示的板块（可拖拽排序）"
+          "markdownDescription": "状态栏 Tooltip 中显示的板块（可拖拽排序）。也可以通过命令 `Token Viewer: 选择显示板块` 快速切换，或点击状态栏 → 菜单 → 选择显示板块"
         }
       }
     },

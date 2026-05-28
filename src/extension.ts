@@ -24,8 +24,8 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     // 创建状态栏项
     const statusBarItem = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Right, 100);
     statusBarItem.text = '$(sync~spin) Credits: 加载中...';
-    statusBarItem.tooltip = 'Token Viewer - 点击打开设置';
-    statusBarItem.command = 'tokenViewer.openSettings';
+    statusBarItem.tooltip = 'Token Viewer - 点击打开菜单';
+    statusBarItem.command = 'tokenViewer.menu';
     statusBarItem.show();
 
     const proxyStatusBarItem = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Right, 99);
