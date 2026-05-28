@@ -2,7 +2,7 @@ import * as vscode from 'vscode';
 import { AppState, XIAOMI_CONFIG, ModelUsage } from './types';
 import { getProxyPort } from './utils';
 import { initStorage, loadAccounts, getAccount, addAccount as storageAddAccount, removeAccount as storageRemoveAccount } from './storage';
-import { getConfig, fetchTokenCount, fetchTodayData, TooltipSection, SECTION_LABELS } from './api';
+import { getConfig, fetchTokenCount, fetchTodayData, TooltipSection, SECTION_LABELS, TooltipLineKey, LINE_LABELS, LINE_TO_SECTION, ALL_LINE_KEYS } from './api';
 import { startProxy, stopProxy, updateProxyStatusBar } from './proxy';
 import { captureCookieViaBrowser } from './browser';
 import { openDashboard } from './dashboard';
@@ -97,6 +97,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         }),
 
         vscode.commands.registerCommand('tokenViewer.toggleSections', () => toggleSections(context)),
+        vscode.commands.registerCommand('tokenViewer.selectModels', () => selectModels(context)),
 
         // 配置变更监听
         vscode.workspace.onDidChangeConfiguration((e) => {
@@ -193,6 +194,7 @@ async function configureCookie(context: vscode.ExtensionContext): Promise<void> 
 
     const headers: Record<string, string> = { 'Cookie': cookieValue };
     await config.update('headers', headers, vscode.ConfigurationTarget.Global);
+    await context.globalState.update('tokenViewer.savedCookie', cookieValue);
 
     app.outputChannel.appendLine('[Token Viewer] ✅ Cookie 已更新');
     vscode.window.showInformationMessage('✅ Cookie 已保存，正在刷新...');
@@ -280,10 +282,11 @@ async function removeAccount(context: vscode.ExtensionContext): Promise<void> {
     storageRemoveAccount(selected.id);
     vscode.window.showInformationMessage(`账号 "${selected.label}" 已删除`);
 
-    // 如果删除的是当前账号，清空激活状态
+    // 如果删除的是当前账号，清空激活状态并刷新
     const activeId = context.globalState.get<string>('tokenViewer.activeAccountId');
     if (activeId === selected.id) {
         await context.globalState.update('tokenViewer.activeAccountId', undefined);
+        fetchTokenCount(app, context);
     }
 }
 
@@ -373,20 +376,25 @@ async function showMenu(context: vscode.ExtensionContext): Promise<void> {
     const activeId = context.globalState.get<string>('tokenViewer.activeAccountId');
     const accountName = activeId ? getAccount(activeId)?.name || '未知' : '默认';
 
-    const items: vscode.QuickPickItem[] = [
-        { label: '$(refresh) 刷新 Credits', description: '立即获取最新数据' },
-        { label: '$(graph) 打开用量面板', description: 'Dashboard 趋势图' },
-        { label: '$(person-add) 添加账号', description: '保存新的 Cookie' },
-        { label: '$(person) 切换账号', description: `当前: ${accountName}` },
-        { label: '$(trash) 删除账号', description: '移除已保存的账号' },
-        { label: '$(report) 查看今日报告', description: '详细用量数据' },
-        { label: '$(clippy) 复制用量摘要', description: '复制到剪贴板' },
-        { label: '$(bell-slash) 暂停告警', description: '暂停 1 小时' },
-        { label: '$(browser) 浏览器获取 Cookie', description: '自动登录采集' },
-        { label: '$(key) 配置 Cookie', description: '手动粘贴' },
-        { label: '$(settings) 设置', description: '打开 VS Code 设置' },
-        { label: '$(list-selection) 选择显示板块', description: '自定义 Tooltip 内容' },
-        { label: '$(link-external) 打开充值页面', description: 'platform.xiaomimimo.com' },
+    interface MenuItem extends vscode.QuickPickItem {
+        command: () => void | Promise<void>;
+    }
+
+    const items: MenuItem[] = [
+        { label: '$(refresh) 刷新 Credits', description: '立即获取最新数据', command: () => fetchTokenCount(app, context) },
+        { label: '$(graph) 打开用量面板', description: 'Dashboard 趋势图', command: () => openDashboard(app, context) },
+        { label: '$(person-add) 添加账号', description: '保存新的 Cookie', command: () => addAccount(context) },
+        { label: '$(person) 切换账号', description: `当前: ${accountName}`, command: () => switchAccount(context) },
+        { label: '$(trash) 删除账号', description: '移除已保存的账号', command: () => removeAccount(context) },
+        { label: '$(report) 查看今日报告', description: '详细用量数据', command: () => showReport(context) },
+        { label: '$(clippy) 复制用量摘要', description: '复制到剪贴板', command: () => copyUsage(context) },
+        { label: '$(bell-slash) 暂停告警', description: '暂停 1 小时', command: () => { app.alertPausedUntil = Date.now() + 60 * 60 * 1000; vscode.window.showInformationMessage('告警已暂停 1 小时'); } },
+        { label: '$(browser) 浏览器获取 Cookie', description: '自动登录采集', command: () => captureCookieViaBrowser(app, context) },
+        { label: '$(key) 配置 Cookie', description: '手动粘贴', command: () => configureCookie(context) },
+        { label: '$(settings) 设置', description: '打开 VS Code 设置', command: () => vscode.commands.executeCommand('workbench.action.openSettings', 'tokenViewer') },
+        { label: '$(list-selection) 选择显示板块', description: '自定义 Tooltip 内容', command: () => toggleSections(context) },
+        { label: '$(symbol-class) 选择显示模型', description: '筛选显示的模型', command: () => selectModels(context) },
+        { label: '$(link-external) 打开充值页面', description: 'platform.xiaomimimo.com', command: () => vscode.env.openExternal(vscode.Uri.parse(XIAOMI_CONFIG.loginUrl)) },
     ];
 
     const selected = await vscode.window.showQuickPick(items, {
@@ -394,48 +402,118 @@ async function showMenu(context: vscode.ExtensionContext): Promise<void> {
     });
 
     if (!selected) { return; }
-
-    const label = selected.label;
-    if (label.includes('刷新')) { fetchTokenCount(app, context); }
-    else if (label.includes('用量面板')) { openDashboard(app, context); }
-    else if (label.includes('添加账号')) { addAccount(context); }
-    else if (label.includes('切换账号')) { switchAccount(context); }
-    else if (label.includes('删除账号')) { removeAccount(context); }
-    else if (label.includes('今日报告')) { showReport(context); }
-    else if (label.includes('复制用量')) { copyUsage(context); }
-    else if (label.includes('暂停告警')) { app.alertPausedUntil = Date.now() + 60 * 60 * 1000; vscode.window.showInformationMessage('告警已暂停 1 小时'); }
-    else if (label.includes('浏览器')) { captureCookieViaBrowser(app, context); }
-    else if (label.includes('配置 Cookie')) { configureCookie(context); }
-    else if (label.includes('设置')) { vscode.commands.executeCommand('workbench.action.openSettings', 'tokenViewer'); }
-    else if (label.includes('显示板块')) { toggleSections(context); }
-    else if (label.includes('充值')) { vscode.env.openExternal(vscode.Uri.parse(XIAOMI_CONFIG.loginUrl)); }
+    await selected.command();
 }
 
 // ============================================================
 // 板块选择
 // ============================================================
 
-const ALL_SECTIONS: TooltipSection[] = ['account', 'todayUsage', 'prediction', 'budget', 'modelRates', 'github'];
+const ALL_SECTIONS: TooltipSection[] = ['account', 'todayUsage', 'prediction', 'budget', 'modelRates', 'cacheHitRate', 'github'];
+
+function sectionToSettingKey(section: TooltipSection): string {
+    return `show${section.charAt(0).toUpperCase()}${section.slice(1)}`;
+}
 
 async function toggleSections(context: vscode.ExtensionContext): Promise<void> {
     const config = vscode.workspace.getConfiguration('tokenViewer');
-    const current = config.get<TooltipSection[]>('tooltipSections', [...ALL_SECTIONS]);
 
-    const items: vscode.QuickPickItem[] = ALL_SECTIONS.map(key => ({
-        label: SECTION_LABELS[key],
-        description: key,
-        picked: current.includes(key),
-    }));
+    interface SectionItem extends vscode.QuickPickItem {
+        sectionKey?: TooltipSection;
+        lineKey?: TooltipLineKey;
+        uniqueKey: string;
+    }
 
-    const selected = await vscode.window.showQuickPick(items, {
-        placeHolder: '选择要在状态栏 Tooltip 中显示的板块',
-        canPickMany: true,
+    const items: SectionItem[] = [];
+
+    for (const section of ALL_SECTIONS) {
+        const sectionEnabled = config.get<boolean>(sectionToSettingKey(section), true);
+
+        // 板块标题行
+        items.push({
+            label: `$(folder) ${SECTION_LABELS[section]}`,
+            description: section,
+            picked: sectionEnabled,
+            sectionKey: section,
+            uniqueKey: `s:${section}`,
+        });
+
+        // 该板块下的细分行
+        const sectionLines = ALL_LINE_KEYS.filter(k => LINE_TO_SECTION[k] === section);
+        for (const lineKey of sectionLines) {
+            const lineEnabled = config.get<boolean>(`line.${lineKey}`, true);
+            items.push({
+                label: `    ${LINE_LABELS[lineKey]}`,
+                description: lineKey,
+                picked: sectionEnabled && lineEnabled,
+                lineKey,
+                uniqueKey: `l:${lineKey}`,
+            });
+        }
+    }
+
+    const picker = vscode.window.createQuickPick<SectionItem>();
+    picker.items = items;
+    picker.canSelectMany = true;
+    picker.placeholder = '勾选要显示的板块和行（板块关闭时子行自动隐藏）';
+    picker.selectedItems = items.filter(i => i.picked);
+
+    picker.onDidAccept(async () => {
+        const selectedKeys = new Set(picker.selectedItems.map(i => i.uniqueKey));
+
+        // 更新板块开关
+        for (const section of ALL_SECTIONS) {
+            const enabled = selectedKeys.has(`s:${section}`);
+            await config.update(sectionToSettingKey(section), enabled, vscode.ConfigurationTarget.Global);
+        }
+
+        // 更新行开关
+        for (const lineKey of ALL_LINE_KEYS) {
+            const enabled = selectedKeys.has(`l:${lineKey}`);
+            await config.update(`line.${lineKey}`, enabled, vscode.ConfigurationTarget.Global);
+        }
+
+        picker.dispose();
+        vscode.window.showInformationMessage('已更新显示板块');
+        fetchTokenCount(app, context);
     });
 
-    if (!selected) { return; }
+    picker.show();
+}
 
-    const newSections = selected.map(item => item.description as TooltipSection);
-    await config.update('tooltipSections', newSections, vscode.ConfigurationTarget.Global);
-    vscode.window.showInformationMessage(`已更新显示板块：${newSections.length} 项`);
-    fetchTokenCount(app, context);
+// ============================================================
+// 模型筛选
+// ============================================================
+
+async function selectModels(context: vscode.ExtensionContext): Promise<void> {
+    // 获取已知模型列表（从 globalState 或 MODEL_RATES 中）
+    const knownModels = context.globalState.get<string[]>('tokenViewer.knownModels', []);
+    const selectedModels = context.globalState.get<string[]>('tokenViewer.selectedModels', []);
+
+    if (knownModels.length === 0) {
+        vscode.window.showInformationMessage('暂无已知模型数据，请先等待数据加载');
+        return;
+    }
+
+    const items: vscode.QuickPickItem[] = knownModels.map(model => ({
+        label: model,
+        description: selectedModels.length === 0 || selectedModels.includes(model) ? '显示' : '隐藏',
+        picked: selectedModels.length === 0 || selectedModels.includes(model),
+    }));
+
+    const picker = vscode.window.createQuickPick();
+    picker.items = items;
+    picker.canSelectMany = true;
+    picker.placeholder = '选择要显示的模型（取消勾选则隐藏）';
+    picker.selectedItems = items.filter(i => i.picked);
+
+    picker.onDidAccept(async () => {
+        const selected = picker.selectedItems.map(i => i.label);
+        await context.globalState.update('tokenViewer.selectedModels', selected);
+        picker.dispose();
+        vscode.window.showInformationMessage(`已选择显示 ${selected.length} 个模型`);
+        fetchTokenCount(app, context);
+    });
+
+    picker.show();
 }

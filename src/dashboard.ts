@@ -48,7 +48,7 @@ export async function openDashboard(app: AppState, context: vscode.ExtensionCont
                     app.dashboardPanel!.webview.html = getDashboardHtml(app, context);
                     break;
                 case 'requestData':
-                    const data = await getDashboardData(message.days || 7);
+                    const data = await getDashboardData(message.days || 7, app.lastTokenCount);
                     app.dashboardPanel!.webview.postMessage({ type: 'data', payload: data });
                     break;
                 case 'requestLogs':
@@ -92,7 +92,7 @@ interface SavingsResult {
     breakdown: Record<string, { current: number; alternative: number; tokens: number }>;
 }
 
-async function getDashboardData(days: number): Promise<DashboardData> {
+async function getDashboardData(days: number, lastTokenCount?: number): Promise<DashboardData> {
     const snapshots = loadHistory(days);
     const config = getConfig();
     let today = null;
@@ -100,6 +100,20 @@ async function getDashboardData(days: number): Promise<DashboardData> {
         const headers = { ...config.headers, 'Accept': 'application/json', 'Content-Type': 'application/json' };
         today = await fetchTodayData(headers);
     } catch { /* ignore */ }
+
+    // 如果今日数据获取失败，从最新快照中恢复
+    if (!today && snapshots.length > 0) {
+        const latest = snapshots[snapshots.length - 1];
+        if (latest.models && Object.keys(latest.models).length > 0) {
+            today = { date: latest.date, models: latest.models };
+        }
+    }
+
+    // 如果仍然没有快照，用 lastTokenCount 构造最小数据
+    if (snapshots.length === 0 && lastTokenCount !== undefined) {
+        const todayStr = getShanghaiTime().dateStr;
+        snapshots.push({ date: todayStr, credits: lastTokenCount, totalCredits: 0, models: {} });
+    }
 
     const team = config.teamSharePath ? loadTeamSnapshots(config.teamSharePath) : {};
 
@@ -184,7 +198,7 @@ function getDashboardHtml(app: AppState, context: vscode.ExtensionContext): stri
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'nonce-${nonce}' 'unsafe-inline'; style-src 'unsafe-inline';">
+    <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'nonce-${nonce}'; style-src 'unsafe-inline';">
     <title>Token Viewer Dashboard</title>
     <style>
         * { margin: 0; padding: 0; box-sizing: border-box; }
@@ -440,6 +454,32 @@ function getDashboardHtml(app: AppState, context: vscode.ExtensionContext): stri
                         }
                     }
                 });
+
+                // 缓存命中率柱状图
+                const hitRateModels = models.map(([m, u]) => {
+                    const hitTotal = (u.inputHit || 0) + (u.inputMiss || 0);
+                    return { model: m, rate: hitTotal > 0 ? (u.inputHit || 0) / hitTotal * 100 : 0 };
+                });
+                container.innerHTML += '<div class="chart-container"><h3>缓存命中率</h3><canvas id="cacheHitChart"></canvas></div>';
+                const cacheCtx = document.getElementById('cacheHitChart').getContext('2d');
+                charts.cacheHit = new Chart(cacheCtx, {
+                    type: 'bar',
+                    data: {
+                        labels: hitRateModels.map(m => m.model),
+                        datasets: [{
+                            label: '命中率 (%)',
+                            data: hitRateModels.map(m => m.rate),
+                            backgroundColor: 'rgba(79,195,247,0.7)',
+                        }]
+                    },
+                    options: {
+                        responsive: true,
+                        plugins: { legend: { display: false } },
+                        scales: {
+                            y: { min: 0, max: 100, ticks: { callback: v => v + '%' } }
+                        }
+                    }
+                });
             }
         }
 
@@ -463,10 +503,12 @@ function getDashboardHtml(app: AppState, context: vscode.ExtensionContext): stri
             const section = document.getElementById('today-section');
             if (!data.today) { section.innerHTML = ''; return; }
             let html = '<div class="chart-container"><h3>今日用量详情</h3>';
-            html += '<table><tr><th>模型</th><th>Token</th><th>Credits</th><th>请求</th><th>均值</th></tr>';
+            html += '<table><tr><th>模型</th><th>Token</th><th>Credits</th><th>请求</th><th>均值</th><th>缓存命中率</th></tr>';
             for (const [model, usage] of Object.entries(data.today.models)) {
                 const avg = usage.totalToken > 0 ? (usage.credits / usage.totalToken).toFixed(2) : '0';
-                html += '<tr><td>' + model + '</td><td>' + formatCompact(usage.totalToken) + '</td><td>' + formatCompact(usage.credits) + '</td><td>' + usage.requests + '</td><td>' + avg + '</td></tr>';
+                const hitTotal = (usage.inputHit || 0) + (usage.inputMiss || 0);
+                const hitRate = hitTotal > 0 ? ((usage.inputHit || 0) / hitTotal * 100).toFixed(1) + '%' : '-';
+                html += '<tr><td>' + model + '</td><td>' + formatCompact(usage.totalToken) + '</td><td>' + formatCompact(usage.credits) + '</td><td>' + usage.requests + '</td><td>' + avg + '</td><td>' + hitRate + '</td></tr>';
             }
             html += '</table></div>';
             section.innerHTML = html;

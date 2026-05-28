@@ -2,7 +2,7 @@ import * as vscode from 'vscode';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as crypto from 'crypto';
-import { DailySnapshot, RequestLogEntry, AccountProfile } from './types';
+import { DailySnapshot, RequestLogEntry, AccountProfile, ModelUsage } from './types';
 import { getShanghaiTime } from './utils';
 import { httpGet } from './http';
 
@@ -62,22 +62,42 @@ export function loadHistory(days: number): DailySnapshot[] {
     return snapshots.reverse();
 }
 
+/** 加载当月所有每日快照并汇总用量 */
+export function loadMonthlyUsage(): Record<string, ModelUsage> {
+    const sh = getShanghaiTime();
+    const year = sh.year;
+    const month = sh.month;
+    const merged: Record<string, ModelUsage> = {};
+
+    const dir = getDataDir('daily');
+    if (!fs.existsSync(dir)) { return merged; }
+
+    const prefix = `${year}-${String(month).padStart(2, '0')}-`;
+    const files = fs.readdirSync(dir).filter(f => f.startsWith(prefix) && f.endsWith('.json'));
+
+    for (const file of files) {
+        try {
+            const snap: DailySnapshot = JSON.parse(fs.readFileSync(path.join(dir, file), 'utf8'));
+            for (const [model, usage] of Object.entries(snap.models)) {
+                if (!merged[model]) {
+                    merged[model] = { totalToken: 0, inputHit: 0, inputMiss: 0, output: 0, credits: 0, requests: 0 };
+                }
+                merged[model].totalToken += usage.totalToken;
+                merged[model].inputHit += usage.inputHit;
+                merged[model].inputMiss += usage.inputMiss;
+                merged[model].output += usage.output;
+                merged[model].credits += usage.credits;
+                merged[model].requests += usage.requests;
+            }
+        } catch { /* skip corrupted file */ }
+    }
+
+    return merged;
+}
+
 // ============================================================
 // 请求日志
 // ============================================================
-
-export function appendRequestLog(entry: RequestLogEntry): void {
-    const dateStr = formatDateShanghai(new Date(entry.timestamp));
-    const filePath = getDataDir('requests', `${dateStr}.json`);
-    let logs: RequestLogEntry[] = [];
-    if (fs.existsSync(filePath)) {
-        try {
-            logs = JSON.parse(fs.readFileSync(filePath, 'utf8'));
-        } catch { logs = []; }
-    }
-    logs.push(entry);
-    fs.writeFileSync(filePath, JSON.stringify(logs), 'utf8');
-}
 
 export function loadRequestLogs(date: string): RequestLogEntry[] {
     const filePath = getDataDir('requests', `${date}.json`);

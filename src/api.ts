@@ -2,14 +2,14 @@ import * as vscode from 'vscode';
 import { AppState, XIAOMI_CONFIG, MODEL_RATES, DailySnapshot, ModelUsage, UsageApiItem } from './types';
 import { formatCompact, resolveJsonPath, isAuthError, calcCredits, buildUsageUrl, getShanghaiTime } from './utils';
 import { httpGet, httpPost } from './http';
-import { saveDailySnapshot, loadHistory, cleanupOldRequestLogs, saveTeamSnapshot, getAccount } from './storage';
+import { saveDailySnapshot, loadHistory, cleanupOldRequestLogs, saveTeamSnapshot, getAccount, loadMonthlyUsage } from './storage';
 
 // ============================================================
 // Token Viewer - API 请求与数据处理
 // ============================================================
 
 /** 可选的 tooltip 板块 */
-export type TooltipSection = 'account' | 'todayUsage' | 'prediction' | 'budget' | 'modelRates' | 'github';
+export type TooltipSection = 'account' | 'todayUsage' | 'prediction' | 'budget' | 'modelRates' | 'cacheHitRate' | 'github';
 
 /** 板块显示名称映射 */
 export const SECTION_LABELS: Record<TooltipSection, string> = {
@@ -18,12 +18,78 @@ export const SECTION_LABELS: Record<TooltipSection, string> = {
     prediction: '消耗预测',
     budget: '月度预算',
     modelRates: '消耗比例',
+    cacheHitRate: '缓存命中率',
     github: 'GitHub 链接',
 };
+
+/** 细分行的配置键 */
+export type TooltipLineKey =
+    | 'accountName'
+    | 'todayToken' | 'todayCredits' | 'todayRequests' | 'todayCacheHitRate' | 'todayTotal'
+    | 'predictionDays'
+    | 'budgetUsed'
+    | 'ratesCacheHit' | 'ratesInput' | 'ratesOutput'
+    | 'githubLink';
+
+/** 行所属的板块 */
+export const LINE_TO_SECTION: Record<TooltipLineKey, TooltipSection> = {
+    accountName: 'account',
+    todayToken: 'todayUsage',
+    todayCredits: 'todayUsage',
+    todayRequests: 'todayUsage',
+    todayCacheHitRate: 'todayUsage',
+    todayTotal: 'todayUsage',
+    predictionDays: 'prediction',
+    budgetUsed: 'budget',
+    ratesCacheHit: 'modelRates',
+    ratesInput: 'modelRates',
+    ratesOutput: 'modelRates',
+    githubLink: 'github',
+};
+
+/** 行显示名称映射 */
+export const LINE_LABELS: Record<TooltipLineKey, string> = {
+    accountName: '账号名称',
+    todayToken: 'Token 用量',
+    todayCredits: 'Credits 消耗',
+    todayRequests: '请求次数/均值',
+    todayCacheHitRate: '缓存命中率',
+    todayTotal: '今日汇总',
+    predictionDays: '预计剩余天数',
+    budgetUsed: '预算消耗百分比',
+    ratesCacheHit: '缓存命中费率',
+    ratesInput: '输入费率',
+    ratesOutput: '输出费率',
+    githubLink: 'GitHub 链接',
+};
+
+/** 所有细分行键 */
+export const ALL_LINE_KEYS: TooltipLineKey[] = [
+    'accountName',
+    'todayToken', 'todayCredits', 'todayRequests', 'todayCacheHitRate', 'todayTotal',
+    'predictionDays',
+    'budgetUsed',
+    'ratesCacheHit', 'ratesInput', 'ratesOutput',
+    'githubLink',
+];
+
+/** 检查行是否应该显示（板块开关 + 行开关都必须开启） */
+function isLineShown(sections: TooltipSection[], lines: Record<TooltipLineKey, boolean>, lineKey: TooltipLineKey): boolean {
+    return sections.includes(LINE_TO_SECTION[lineKey]) && lines[lineKey];
+}
 
 /** 获取配置 */
 export function getConfig() {
     const config = vscode.workspace.getConfiguration('tokenViewer');
+    const sections = (['account', 'todayUsage', 'prediction', 'budget', 'modelRates', 'cacheHitRate', 'github'] as TooltipSection[])
+        .filter(key => config.get<boolean>(`show${key.charAt(0).toUpperCase() + key.slice(1)}`, true));
+
+    // 读取行级配置
+    const lines: Record<TooltipLineKey, boolean> = {} as any;
+    for (const key of ALL_LINE_KEYS) {
+        lines[key] = config.get<boolean>(`line.${key}`, true);
+    }
+
     return {
         headers: config.get<Record<string, string>>('headers', {}),
         refreshInterval: config.get<number>('refreshInterval', 10),
@@ -32,7 +98,8 @@ export function getConfig() {
         budgetAlertLevels: config.get<number[]>('budgetAlertLevels', [50, 80, 100]),
         teamSharePath: config.get<string>('teamSharePath', ''),
         username: config.get<string>('username', ''),
-        tooltipSections: config.get<TooltipSection[]>('tooltipSections', ['account', 'todayUsage', 'prediction', 'budget', 'modelRates', 'github']),
+        tooltipSections: sections,
+        tooltipLines: lines,
     };
 }
 
@@ -216,6 +283,29 @@ export async function fetchTokenCount(app: AppState, context: vscode.ExtensionCo
         // 获取今日用量数据（用于显示和存储）
         const todayData = await fetchTodayData(headers, app.outputChannel);
 
+        // 追踪已知模型列表
+        if (todayData) {
+            const currentModels = Object.keys(todayData.models);
+            const knownModels = context.globalState.get<string[]>('tokenViewer.knownModels', []);
+            const merged = [...new Set([...knownModels, ...currentModels])];
+            if (merged.length !== knownModels.length || !merged.every(m => knownModels.includes(m))) {
+                context.globalState.update('tokenViewer.knownModels', merged);
+            }
+        }
+
+        // 按用户选择的模型筛选
+        const selectedModels = context.globalState.get<string[]>('tokenViewer.selectedModels', []);
+        let filteredTodayData = todayData;
+        if (todayData && selectedModels.length > 0) {
+            const filtered: Record<string, ModelUsage> = {};
+            for (const [model, usage] of Object.entries(todayData.models)) {
+                if (selectedModels.includes(model)) {
+                    filtered[model] = usage;
+                }
+            }
+            filteredTodayData = { ...todayData, models: filtered };
+        }
+
         // 保存每日快照
         if (todayData) {
             const snapshot: DailySnapshot = {
@@ -249,11 +339,12 @@ export async function fetchTokenCount(app: AppState, context: vscode.ExtensionCo
             tooltipText += `\n总量: ${totalTokens.toLocaleString('zh-CN')}（${formatCompact(totalTokens)}）`;
         }
 
-        // 按用户选择的板块生成 tooltip
+        // 按用户选择的板块和行生成 tooltip
         const sections = config.tooltipSections;
+        const lines = config.tooltipLines;
 
         // 账号信息
-        if (sections.includes('account')) {
+        if (isLineShown(sections, lines, 'accountName')) {
             const activeAccountId = context.globalState.get<string>('tokenViewer.activeAccountId');
             if (activeAccountId) {
                 const account = getAccount(activeAccountId);
@@ -264,8 +355,8 @@ export async function fetchTokenCount(app: AppState, context: vscode.ExtensionCo
         }
 
         // 今日用量
-        if (sections.includes('todayUsage') && todayData) {
-            const todayFormatted = formatTodayUsage(todayData.models, totalTokens);
+        if (sections.includes('todayUsage') && filteredTodayData) {
+            const todayFormatted = formatTodayUsage(filteredTodayData.models, totalTokens, lines);
             if (todayFormatted) {
                 tooltipText += `\n\n今日用量`;
                 tooltipText += todayFormatted;
@@ -273,7 +364,7 @@ export async function fetchTokenCount(app: AppState, context: vscode.ExtensionCo
         }
 
         // 消耗预测
-        if (sections.includes('prediction')) {
+        if (isLineShown(sections, lines, 'predictionDays')) {
             const prediction = calculatePrediction(tokenNum);
             if (prediction) {
                 tooltipText += `\n\n消耗预测`;
@@ -281,9 +372,10 @@ export async function fetchTokenCount(app: AppState, context: vscode.ExtensionCo
             }
         }
 
-        // 预算信息
-        if (sections.includes('budget') && config.monthlyBudget > 0 && todayData) {
-            const totalCreditsUsed = Object.values(todayData.models).reduce((sum, m) => sum + m.credits, 0);
+        // 预算信息（按当月累计计算）
+        if (isLineShown(sections, lines, 'budgetUsed') && config.monthlyBudget > 0) {
+            const monthlyModels = loadMonthlyUsage();
+            const totalCreditsUsed = Object.values(monthlyModels).reduce((sum, m) => sum + m.credits, 0);
             const budgetUsedPercent = (totalCreditsUsed / config.monthlyBudget) * 100;
             tooltipText += `\n\n月度预算`;
             tooltipText += `\n已消耗: ${formatCompact(totalCreditsUsed)} / ${formatCompact(config.monthlyBudget)} (${budgetUsedPercent.toFixed(1)}%)`;
@@ -291,16 +383,45 @@ export async function fetchTokenCount(app: AppState, context: vscode.ExtensionCo
 
         // 消耗比例
         if (sections.includes('modelRates')) {
-            tooltipText += `\n\n消耗比例 (Credits/Token)`;
-            for (const [model, rates] of Object.entries(MODEL_RATES)) {
-                tooltipText += `\n${model}`;
-                tooltipText += `\n缓存命中: ${rates.cacheHit} 输入: ${rates.input} 输出: ${rates.output}`;
+            const hasAnyRate = lines.ratesCacheHit || lines.ratesInput || lines.ratesOutput;
+            if (hasAnyRate) {
+                tooltipText += `\n\n消耗比例 (Credits/Token)`;
+                for (const [model, rates] of Object.entries(MODEL_RATES)) {
+                    tooltipText += `\n${model}`;
+                    const parts: string[] = [];
+                    if (lines.ratesCacheHit) { parts.push(`缓存命中: ${rates.cacheHit}`); }
+                    if (lines.ratesInput) { parts.push(`输入: ${rates.input}`); }
+                    if (lines.ratesOutput) { parts.push(`输出: ${rates.output}`); }
+                    tooltipText += `\n${parts.join(' | ')}`;
+                }
+            }
+        }
+
+        // 缓存命中率
+        if (sections.includes('cacheHitRate') && filteredTodayData) {
+            const models = filteredTodayData.models;
+            const modelEntries = Object.entries(models);
+            if (modelEntries.length > 0) {
+                tooltipText += `\n\n缓存命中率`;
+                let totalHit = 0;
+                let totalMiss = 0;
+                for (const [model, e] of modelEntries) {
+                    const hitTotal = e.inputHit + e.inputMiss;
+                    const hitRate = hitTotal > 0 ? (e.inputHit / hitTotal * 100) : 0;
+                    tooltipText += `\n  ${model}: ${hitRate.toFixed(1)}%`;
+                    totalHit += e.inputHit;
+                    totalMiss += e.inputMiss;
+                }
+                const overallTotal = totalHit + totalMiss;
+                if (overallTotal > 0) {
+                    tooltipText += `\n  总计: ${(totalHit / overallTotal * 100).toFixed(1)}%`;
+                }
             }
         }
 
         // GitHub 链接
-        if (sections.includes('github')) {
-            tooltipText += `\n本项目Github:github.com/bynlk/token-viewer`;
+        if (isLineShown(sections, lines, 'githubLink')) {
+            tooltipText += `\n本项目地址:github.com/bynlk/token-viewer`;
         }
 
         tooltipText += `\n\n最后更新: ${now}\n点击刷新`;
@@ -322,9 +443,10 @@ export async function fetchTokenCount(app: AppState, context: vscode.ExtensionCo
             app.alertShown = false;
         }
 
-        // 预算告警
-        if (config.monthlyBudget > 0 && todayData) {
-            checkBudgetAlerts(app, context, todayData.models, config.monthlyBudget, config.budgetAlertLevels);
+        // 预算告警（按当月累计计算）
+        if (config.monthlyBudget > 0) {
+            const monthlyModels = loadMonthlyUsage();
+            checkBudgetAlerts(context, monthlyModels, config.monthlyBudget, config.budgetAlertLevels);
         }
 
         // 通知 Dashboard 刷新
@@ -421,29 +543,40 @@ export async function fetchTodayData(headers: Record<string, string>, outputChan
 // Tooltip 格式化
 // ============================================================
 
-function formatTodayUsage(models: Record<string, ModelUsage>, totalCredits?: number): string {
-    const lines: string[] = [];
+function formatTodayUsage(models: Record<string, ModelUsage>, totalCredits?: number, lineSettings?: Record<TooltipLineKey, boolean>): string {
+    const output: string[] = [];
     let allTotal = 0;
     let allCredits = 0;
 
     for (const [model, e] of Object.entries(models)) {
         allTotal += e.totalToken;
         allCredits += e.credits;
-        const avgPerToken = e.totalToken > 0 ? e.credits / e.totalToken : 0;
-        lines.push(`\n${model}`);
-        lines.push(`  token: ${e.totalToken.toLocaleString('zh-CN')}（${formatCompact(e.totalToken)}）`);
-        lines.push(`  credits: ${e.credits.toLocaleString('zh-CN')}（${formatCompact(e.credits)}）`);
-        lines.push(`  请求: ${e.requests}次 | 平均 ≈ ${avgPerToken.toFixed(1)} credits/token`);
+        output.push(`\n${model}`);
+        if (!lineSettings || lineSettings.todayToken) {
+            output.push(`  token: ${e.totalToken.toLocaleString('zh-CN')}（${formatCompact(e.totalToken)}）`);
+        }
+        if (!lineSettings || lineSettings.todayCredits) {
+            output.push(`  credits: ${e.credits.toLocaleString('zh-CN')}（${formatCompact(e.credits)}）`);
+        }
+        if (!lineSettings || lineSettings.todayRequests) {
+            const avgPerToken = e.totalToken > 0 ? e.credits / e.totalToken : 0;
+            output.push(`  请求: ${e.requests}次 | 均值 ≈ ${avgPerToken.toFixed(1)} credits/token`);
+        }
+        if (!lineSettings || lineSettings.todayCacheHitRate) {
+            const hitTotal = e.inputHit + e.inputMiss;
+            const hitRate = hitTotal > 0 ? (e.inputHit / hitTotal * 100) : 0;
+            output.push(`  缓存命中率: ${hitRate.toFixed(1)}%`);
+        }
     }
 
-    if (totalCredits !== undefined && totalCredits > 0) {
+    if ((!lineSettings || lineSettings.todayTotal) && totalCredits !== undefined && totalCredits > 0) {
         const usedPercent = (allCredits / (totalCredits + allCredits)) * 100;
-        lines.push(`\n今日总消耗: ${allCredits.toLocaleString('zh-CN')}（${formatCompact(allCredits)}）`);
-        lines.push(`今日 token: ${allTotal.toLocaleString('zh-CN')}（${formatCompact(allTotal)}）`);
-        lines.push(`占总量: ${usedPercent.toFixed(1)}%`);
+        output.push(`\n今日总消耗: ${allCredits.toLocaleString('zh-CN')}（${formatCompact(allCredits)}）`);
+        output.push(`今日 token: ${allTotal.toLocaleString('zh-CN')}（${formatCompact(allTotal)}）`);
+        output.push(`占总量: ${usedPercent.toFixed(1)}%`);
     }
 
-    return lines.length > 0 ? lines.join('\n') : '';
+    return output.length > 0 ? output.join('\n') : '';
 }
 
 // ============================================================
@@ -536,7 +669,6 @@ function calculatePrediction(currentCredits: number): string | null {
 // ============================================================
 
 function checkBudgetAlerts(
-    app: AppState,
     context: vscode.ExtensionContext,
     models: Record<string, ModelUsage>,
     budget: number,

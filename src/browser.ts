@@ -9,19 +9,6 @@ import { fetchTokenCount } from './api';
 // Token Viewer - 浏览器 Cookie 采集 & 自动启动
 // ============================================================
 
-function findChromePath(): string | undefined {
-    const candidates = [
-        'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe',
-        'C:\\Program Files (x86)\\Google\\Chrome\\Application\\chrome.exe',
-        'C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe',
-        'C:\\Program Files\\Microsoft\\Edge\\Application\\msedge.exe',
-    ];
-    for (const p of candidates) {
-        if (fs.existsSync(p)) { return p; }
-    }
-    return undefined;
-}
-
 export function findBrowserPath(): string | undefined {
     const candidates = [
         'C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe',
@@ -44,7 +31,7 @@ export async function captureCookieViaBrowser(app: AppState, context: vscode.Ext
         return;
     }
 
-    const chromePath = findChromePath();
+    const chromePath = findBrowserPath();
 
     if (!chromePath) {
         vscode.window.showErrorMessage('未找到 Chrome 或 Edge 浏览器');

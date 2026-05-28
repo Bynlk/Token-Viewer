@@ -2,7 +2,7 @@
   "name": "token-viewer",
   "displayName": "Token Viewer",
   "description": "小米 MiMo Credits 全方位管理平台：监控、趋势分析、预算管理、多账号、团队协作",
-  "version": "2.7.0",
+  "version": "3.0.0",
   "publisher": "bynlk",
   "repository": {
     "type": "git",
@@ -105,6 +105,11 @@
         "command": "tokenViewer.toggleSections",
         "title": "Token Viewer: 选择显示板块",
         "category": "Token Viewer"
+      },
+      {
+        "command": "tokenViewer.selectModels",
+        "title": "Token Viewer: 选择显示模型",
+        "category": "Token Viewer"
       }
     ],
     "configuration": {
@@ -156,22 +161,100 @@
           "default": "",
           "description": "团队共享中的用户名"
         },
-        "tokenViewer.tooltipSections": {
-          "type": "array",
-          "default": ["account", "todayUsage", "prediction", "budget", "modelRates", "github"],
-          "items": {
-            "type": "string",
-            "enum": ["account", "todayUsage", "prediction", "budget", "modelRates", "github"],
-            "enumDescriptions": [
-              "当前账号名称",
-              "今日各模型 Token/Credits 用量",
-              "基于历史数据的消耗预测",
-              "月度预算消耗百分比",
-              "各模型 Credit/Token 费率",
-              "项目 GitHub 链接"
-            ]
-          },
-          "markdownDescription": "状态栏 Tooltip 中显示的板块（可拖拽排序）。也可以通过命令 `Token Viewer: 选择显示板块` 快速切换，或点击状态栏 → 菜单 → 选择显示板块"
+        "tokenViewer.showAccount": {
+          "type": "boolean",
+          "default": true,
+          "description": "在 Tooltip 中显示当前账号名称"
+        },
+        "tokenViewer.showTodayUsage": {
+          "type": "boolean",
+          "default": true,
+          "description": "在 Tooltip 中显示今日各模型 Token/Credits 用量"
+        },
+        "tokenViewer.showPrediction": {
+          "type": "boolean",
+          "default": true,
+          "description": "在 Tooltip 中显示基于历史数据的消耗预测"
+        },
+        "tokenViewer.showBudget": {
+          "type": "boolean",
+          "default": true,
+          "description": "在 Tooltip 中显示月度预算消耗百分比"
+        },
+        "tokenViewer.showModelRates": {
+          "type": "boolean",
+          "default": true,
+          "description": "在 Tooltip 中显示各模型 Credit/Token 费率"
+        },
+        "tokenViewer.showCacheHitRate": {
+          "type": "boolean",
+          "default": true,
+          "description": "在 Tooltip 中显示各模型缓存命中率"
+        },
+        "tokenViewer.showGithub": {
+          "type": "boolean",
+          "default": true,
+          "description": "在 Tooltip 中显示项目 GitHub 链接"
+        },
+        "tokenViewer.line.accountName": {
+          "type": "boolean",
+          "default": true,
+          "description": "显示账号名称"
+        },
+        "tokenViewer.line.todayToken": {
+          "type": "boolean",
+          "default": true,
+          "description": "显示今日 Token 用量"
+        },
+        "tokenViewer.line.todayCredits": {
+          "type": "boolean",
+          "default": true,
+          "description": "显示今日 Credits 消耗"
+        },
+        "tokenViewer.line.todayRequests": {
+          "type": "boolean",
+          "default": true,
+          "description": "显示今日请求次数和均值"
+        },
+        "tokenViewer.line.todayCacheHitRate": {
+          "type": "boolean",
+          "default": true,
+          "description": "显示今日缓存命中率"
+        },
+        "tokenViewer.line.todayTotal": {
+          "type": "boolean",
+          "default": true,
+          "description": "显示今日汇总（总消耗/总 Token/占比）"
+        },
+        "tokenViewer.line.predictionDays": {
+          "type": "boolean",
+          "default": true,
+          "description": "显示预计剩余天数"
+        },
+        "tokenViewer.line.budgetUsed": {
+          "type": "boolean",
+          "default": true,
+          "description": "显示月度预算已消耗百分比"
+        },
+        "tokenViewer.line.ratesCacheHit": {
+          "type": "boolean",
+          "default": true,
+          "description": "显示缓存命中费率"
+        },
+        "tokenViewer.line.ratesInput": {
+          "type": "boolean",
+          "default": true,
+          "description": "显示输入费率"
+        },
+        "tokenViewer.line.ratesOutput": {
+          "type": "boolean",
+          "default": true,
+          "description": "显示输出费率"
+        },
+        "tokenViewer.line.githubLink": {
+          "type": "boolean",
+          "default": true,
+          "description": "显示 GitHub 项目链接"
         }
       }
     },
