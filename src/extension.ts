@@ -2,7 +2,9 @@ import * as vscode from 'vscode';
 import { AppState, XIAOMI_CONFIG, ModelUsage } from './types';
 import { getProxyPort } from './utils';
 import { initStorage, loadAccounts, getAccount, addAccount as storageAddAccount, removeAccount as storageRemoveAccount } from './storage';
-import { getConfig, fetchTokenCount, fetchTodayData, TooltipSection, SECTION_LABELS, TooltipLineKey, LINE_LABELS, LINE_TO_SECTION, ALL_LINE_KEYS } from './api';
+import { loadAccountsDecrypted, getAccountDecrypted, addAccountEncrypted, migrateCookiesToEncrypted } from './cookie-storage';
+import { fetchTokenCount, fetchTodayData } from './api';
+import { getConfig, TooltipSection, SECTION_LABELS, TooltipLineKey, LINE_LABELS, LINE_TO_SECTION, ALL_LINE_KEYS, ALL_SECTIONS, sectionToSettingKey } from './config';
 import { startProxy, stopProxy, updateProxyStatusBar } from './proxy';
 import { captureCookieViaBrowser } from './browser';
 import { openDashboard } from './dashboard';
@@ -127,6 +129,13 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         }
     }
 
+    // 迁移明文 cookie 到加密存储
+    migrateCookiesToEncrypted(context).then(count => {
+        if (count > 0) {
+            outputChannel.appendLine(`[Token Viewer] 已加密 ${count} 个 cookie`);
+        }
+    }).catch(() => { /* 迁移失败不阻塞启动 */ });
+
     // 首次刷新
     fetchTokenCount(app, context);
 
@@ -218,7 +227,7 @@ async function addAccount(context: vscode.ExtensionContext): Promise<void> {
     });
     if (!cookie) { return; }
 
-    const profile = storageAddAccount(name, cookie);
+    const profile = await addAccountEncrypted(context, name, cookie);
     vscode.window.showInformationMessage(`✅ 账号 "${name}" 已添加`);
 
     // 询问是否切换到新账号
@@ -232,7 +241,7 @@ async function addAccount(context: vscode.ExtensionContext): Promise<void> {
 }
 
 async function switchAccount(context: vscode.ExtensionContext): Promise<void> {
-    const accounts = loadAccounts();
+    const accounts = await loadAccountsDecrypted(context);
     if (accounts.length === 0) {
         vscode.window.showInformationMessage('暂无保存的账号，请先添加账号');
         return;
@@ -251,7 +260,7 @@ async function switchAccount(context: vscode.ExtensionContext): Promise<void> {
 
     if (!selected) { return; }
 
-    const account = getAccount(selected.id);
+    const account = accounts.find(a => a.id === selected.id);
     if (!account) { return; }
 
     await context.globalState.update('tokenViewer.activeAccountId', account.id);
@@ -374,7 +383,8 @@ async function copyUsage(_context: vscode.ExtensionContext): Promise<void> {
 
 async function showMenu(context: vscode.ExtensionContext): Promise<void> {
     const activeId = context.globalState.get<string>('tokenViewer.activeAccountId');
-    const accountName = activeId ? getAccount(activeId)?.name || '未知' : '默认';
+    const activeAccount = activeId ? await getAccountDecrypted(context, activeId) : undefined;
+    const accountName = activeAccount?.name || '默认';
 
     interface MenuItem extends vscode.QuickPickItem {
         command: () => void | Promise<void>;
@@ -408,12 +418,6 @@ async function showMenu(context: vscode.ExtensionContext): Promise<void> {
 // ============================================================
 // 板块选择
 // ============================================================
-
-const ALL_SECTIONS: TooltipSection[] = ['account', 'todayUsage', 'prediction', 'budget', 'modelRates', 'cacheHitRate', 'github'];
-
-function sectionToSettingKey(section: TooltipSection): string {
-    return `show${section.charAt(0).toUpperCase()}${section.slice(1)}`;
-}
 
 async function toggleSections(context: vscode.ExtensionContext): Promise<void> {
     const config = vscode.workspace.getConfiguration('tokenViewer');

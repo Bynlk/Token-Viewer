@@ -1,107 +1,16 @@
 import * as vscode from 'vscode';
-import { AppState, XIAOMI_CONFIG, MODEL_RATES, DailySnapshot, ModelUsage, UsageApiItem } from './types';
+import { AppState, XIAOMI_CONFIG, DailySnapshot, ModelUsage, UsageApiItem } from './types';
 import { formatCompact, resolveJsonPath, isAuthError, calcCredits, buildUsageUrl, getShanghaiTime, getUtcTime } from './utils';
 import { httpGet, httpPost } from './http';
-import { saveDailySnapshot, loadHistory, cleanupOldRequestLogs, saveTeamSnapshot, getAccount, loadMonthlyUsage } from './storage';
+import { saveDailySnapshot, cleanupOldRequestLogs, saveTeamSnapshot, getAccount, loadMonthlyUsage } from './storage';
+import { getConfig, TooltipLineKey, isLineShown } from './config';
+import { formatTodayUsage, formatModelRates, formatCacheHitRate } from './formatter';
+import { checkBudgetAlerts } from './budget';
+import { calculatePrediction } from './prediction';
 
 // ============================================================
-// Token Viewer - API 请求与数据处理
+// Token Viewer - API 请求与数据获取
 // ============================================================
-
-/** 可选的 tooltip 板块 */
-export type TooltipSection = 'account' | 'todayUsage' | 'prediction' | 'budget' | 'modelRates' | 'cacheHitRate' | 'github';
-
-/** 板块显示名称映射 */
-export const SECTION_LABELS: Record<TooltipSection, string> = {
-    account: '账号信息',
-    todayUsage: '今日用量',
-    prediction: '消耗预测',
-    budget: '月度预算',
-    modelRates: '消耗比例',
-    cacheHitRate: '缓存命中率',
-    github: 'GitHub 链接',
-};
-
-/** 细分行的配置键 */
-export type TooltipLineKey =
-    | 'accountName'
-    | 'todayToken' | 'todayCredits' | 'todayRequests' | 'todayCacheHitRate' | 'todayTotal'
-    | 'predictionDays'
-    | 'budgetUsed'
-    | 'ratesCacheHit' | 'ratesInput' | 'ratesOutput'
-    | 'githubLink';
-
-/** 行所属的板块 */
-export const LINE_TO_SECTION: Record<TooltipLineKey, TooltipSection> = {
-    accountName: 'account',
-    todayToken: 'todayUsage',
-    todayCredits: 'todayUsage',
-    todayRequests: 'todayUsage',
-    todayCacheHitRate: 'todayUsage',
-    todayTotal: 'todayUsage',
-    predictionDays: 'prediction',
-    budgetUsed: 'budget',
-    ratesCacheHit: 'modelRates',
-    ratesInput: 'modelRates',
-    ratesOutput: 'modelRates',
-    githubLink: 'github',
-};
-
-/** 行显示名称映射 */
-export const LINE_LABELS: Record<TooltipLineKey, string> = {
-    accountName: '账号名称',
-    todayToken: 'Token 用量',
-    todayCredits: 'Credits 消耗',
-    todayRequests: '请求次数/均值',
-    todayCacheHitRate: '缓存命中率',
-    todayTotal: '今日汇总',
-    predictionDays: '预计剩余天数',
-    budgetUsed: '预算消耗百分比',
-    ratesCacheHit: '缓存命中费率',
-    ratesInput: '输入费率',
-    ratesOutput: '输出费率',
-    githubLink: 'GitHub 链接',
-};
-
-/** 所有细分行键 */
-export const ALL_LINE_KEYS: TooltipLineKey[] = [
-    'accountName',
-    'todayToken', 'todayCredits', 'todayRequests', 'todayCacheHitRate', 'todayTotal',
-    'predictionDays',
-    'budgetUsed',
-    'ratesCacheHit', 'ratesInput', 'ratesOutput',
-    'githubLink',
-];
-
-/** 检查行是否应该显示（板块开关 + 行开关都必须开启） */
-function isLineShown(sections: TooltipSection[], lines: Record<TooltipLineKey, boolean>, lineKey: TooltipLineKey): boolean {
-    return sections.includes(LINE_TO_SECTION[lineKey]) && lines[lineKey];
-}
-
-/** 获取配置 */
-export function getConfig() {
-    const config = vscode.workspace.getConfiguration('tokenViewer');
-    const sections = (['account', 'todayUsage', 'prediction', 'budget', 'modelRates', 'cacheHitRate', 'github'] as TooltipSection[])
-        .filter(key => config.get<boolean>(`show${key.charAt(0).toUpperCase() + key.slice(1)}`, true));
-
-    // 读取行级配置
-    const lines: Record<TooltipLineKey, boolean> = {} as any;
-    for (const key of ALL_LINE_KEYS) {
-        lines[key] = config.get<boolean>(`line.${key}`, true);
-    }
-
-    return {
-        headers: config.get<Record<string, string>>('headers', {}),
-        refreshInterval: config.get<number>('refreshInterval', 10),
-        alertThreshold: config.get<number>('alertThreshold', 100000000),
-        monthlyBudget: config.get<number>('monthlyBudget', 0),
-        budgetAlertLevels: config.get<number[]>('budgetAlertLevels', [50, 80, 100]),
-        teamSharePath: config.get<string>('teamSharePath', ''),
-        username: config.get<string>('username', ''),
-        tooltipSections: sections,
-        tooltipLines: lines,
-    };
-}
 
 /** 错误处理 */
 function handleFetchError(app: AppState, message: string, detail?: string): void {
@@ -353,40 +262,16 @@ export async function fetchTokenCount(app: AppState, context: vscode.ExtensionCo
 
         // 消耗比例
         if (sections.includes('modelRates')) {
-            const hasAnyRate = lines.ratesCacheHit || lines.ratesInput || lines.ratesOutput;
-            if (hasAnyRate) {
-                tooltipText += `\n\n消耗比例 (Credits/Token)`;
-                for (const [model, rates] of Object.entries(MODEL_RATES)) {
-                    tooltipText += `\n${model}`;
-                    const parts: string[] = [];
-                    if (lines.ratesCacheHit) { parts.push(`缓存命中: ${rates.cacheHit}`); }
-                    if (lines.ratesInput) { parts.push(`输入: ${rates.input}`); }
-                    if (lines.ratesOutput) { parts.push(`输出: ${rates.output}`); }
-                    tooltipText += `\n${parts.join(' | ')}`;
-                }
-            }
+            tooltipText += formatModelRates({
+                ratesCacheHit: lines.ratesCacheHit,
+                ratesInput: lines.ratesInput,
+                ratesOutput: lines.ratesOutput,
+            });
         }
 
         // 缓存命中率
         if (sections.includes('cacheHitRate') && filteredTodayData) {
-            const models = filteredTodayData.models;
-            const modelEntries = Object.entries(models);
-            if (modelEntries.length > 0) {
-                tooltipText += `\n\n缓存命中率`;
-                let totalHit = 0;
-                let totalMiss = 0;
-                for (const [model, e] of modelEntries) {
-                    const hitTotal = e.inputHit + e.inputMiss;
-                    const hitRate = hitTotal > 0 ? (e.inputHit / hitTotal * 100) : 0;
-                    tooltipText += `\n  ${model}: ${hitRate.toFixed(1)}%`;
-                    totalHit += e.inputHit;
-                    totalMiss += e.inputMiss;
-                }
-                const overallTotal = totalHit + totalMiss;
-                if (overallTotal > 0) {
-                    tooltipText += `\n  总计: ${(totalHit / overallTotal * 100).toFixed(1)}%`;
-                }
-            }
+            tooltipText += formatCacheHitRate(filteredTodayData.models);
         }
 
         // GitHub 链接
@@ -506,46 +391,6 @@ export async function fetchTodayData(headers: Record<string, string>, outputChan
 }
 
 // ============================================================
-// Tooltip 格式化
-// ============================================================
-
-function formatTodayUsage(models: Record<string, ModelUsage>, totalCredits?: number, lineSettings?: Record<TooltipLineKey, boolean>): string {
-    const output: string[] = [];
-    let allTotal = 0;
-    let allCredits = 0;
-
-    for (const [model, e] of Object.entries(models)) {
-        allTotal += e.totalToken;
-        allCredits += e.credits;
-        output.push(`\n${model}`);
-        if (!lineSettings || lineSettings.todayToken) {
-            output.push(`  token: ${e.totalToken.toLocaleString('zh-CN')}（${formatCompact(e.totalToken)}）`);
-        }
-        if (!lineSettings || lineSettings.todayCredits) {
-            output.push(`  credits: ${e.credits.toLocaleString('zh-CN')}（${formatCompact(e.credits)}）`);
-        }
-        if (!lineSettings || lineSettings.todayRequests) {
-            const avgPerToken = e.totalToken > 0 ? e.credits / e.totalToken : 0;
-            output.push(`  请求: ${e.requests}次 | 均值 ≈ ${avgPerToken.toFixed(1)} credits/token`);
-        }
-        if (!lineSettings || lineSettings.todayCacheHitRate) {
-            const hitTotal = e.inputHit + e.inputMiss;
-            const hitRate = hitTotal > 0 ? (e.inputHit / hitTotal * 100) : 0;
-            output.push(`  缓存命中率: ${hitRate.toFixed(1)}%`);
-        }
-    }
-
-    if ((!lineSettings || lineSettings.todayTotal) && totalCredits !== undefined && totalCredits > 0) {
-        const usedPercent = (allCredits / totalCredits) * 100;
-        output.push(`\n今日总消耗: ${allCredits.toLocaleString('zh-CN')}（${formatCompact(allCredits)}）`);
-        output.push(`今日 token: ${allTotal.toLocaleString('zh-CN')}（${formatCompact(allTotal)}）`);
-        output.push(`占总量: ${usedPercent.toFixed(1)}%`);
-    }
-
-    return output.length > 0 ? output.join('\n') : '';
-}
-
-// ============================================================
 // 按模型用量报告（30分钟通知）
 // ============================================================
 
@@ -599,59 +444,6 @@ async function reportModelUsage(
         if (summary) {
             vscode.window.showInformationMessage(
                 `🤖 今日累计用量\n${summary}\n💰 Credits 剩余: ${currentCompact}`
-            );
-        }
-    }
-}
-
-// ============================================================
-// 消耗预测
-// ============================================================
-
-function calculatePrediction(currentCredits: number): string | null {
-    const history = loadHistory(7);
-    if (history.length < 2) { return null; }
-
-    const first = history[0];
-    const last = history[history.length - 1];
-    const daysDiff = history.length - 1;
-    if (daysDiff <= 0) { return null; }
-
-    const dailyConsumption = (first.credits - last.credits) / daysDiff;
-    if (dailyConsumption <= 0) { return null; }
-
-    const daysRemaining = currentCredits / dailyConsumption;
-    const hoursRemaining = Math.round((daysRemaining % 1) * 24);
-    const fullDays = Math.floor(daysRemaining);
-
-    if (fullDays > 365) {
-        return `\n预计还能用: > 1年`;
-    }
-    return `\n预计还能用: ${fullDays}天${hoursRemaining}小时（基于近${history.length}天数据）`;
-}
-
-// ============================================================
-// 预算告警
-// ============================================================
-
-function checkBudgetAlerts(
-    context: vscode.ExtensionContext,
-    models: Record<string, ModelUsage>,
-    budget: number,
-    levels: number[]
-): void {
-    const totalUsed = Object.values(models).reduce((sum, m) => sum + m.credits, 0);
-    const percent = (totalUsed / budget) * 100;
-
-    const triggeredKey = 'tokenViewer.budgetAlertsTriggered';
-    const triggered = context.globalState.get<number[]>(triggeredKey, []);
-
-    for (const level of levels) {
-        if (percent >= level && !triggered.includes(level)) {
-            triggered.push(level);
-            context.globalState.update(triggeredKey, triggered);
-            vscode.window.showWarningMessage(
-                `⚠️ 月度预算已用 ${percent.toFixed(1)}%（${level}% 告警）\n已消耗: ${formatCompact(totalUsed)} / ${formatCompact(budget)}`
             );
         }
     }
