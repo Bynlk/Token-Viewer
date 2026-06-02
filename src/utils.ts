@@ -130,7 +130,6 @@ export function buildUsageUrl(cookie: string): string {
 
 /** 根据模型和 token 分类计算 credits 消耗 */
 export function calcCredits(model: string, inputHit: number, inputMiss: number, output: number): number {
-    const rates = MODEL_RATES[model];
-    if (!rates) { return 0; }
+    const rates = MODEL_RATES[model] || MODEL_RATES['_default'];
     return inputHit * rates.cacheHit + inputMiss * rates.input + output * rates.output;
 }

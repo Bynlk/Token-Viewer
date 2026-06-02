@@ -49,17 +49,29 @@ export function loadDailySnapshot(date: string): DailySnapshot | null {
     }
 }
 
+/**
+ * 加载最近 N 天的历史快照
+ * 优化：直接读取目录，只处理存在的文件，而非循环检查每一天
+ */
 export function loadHistory(days: number): DailySnapshot[] {
+    const dir = getDataDir('daily');
+    if (!fs.existsSync(dir)) { return []; }
+
+    // 直接读取目录，只处理存在的文件
+    const files = fs.readdirSync(dir)
+        .filter(f => f.endsWith('.json'))
+        .sort()           // 按日期排序（文件名格式 YYYY-MM-DD.json）
+        .slice(-days);     // 取最近 N 天
+
     const snapshots: DailySnapshot[] = [];
-    const sh = getShanghaiTime();
-    for (let i = 0; i < days; i++) {
-        const d = new Date(sh.now);
-        d.setDate(d.getDate() - i);
-        const dateStr = formatDateShanghai(d);
-        const snap = loadDailySnapshot(dateStr);
-        if (snap) { snapshots.push(snap); }
+    for (const file of files) {
+        try {
+            const snap: DailySnapshot = JSON.parse(fs.readFileSync(path.join(dir, file), 'utf8'));
+            snapshots.push(snap);
+        } catch { /* skip corrupted file */ }
     }
-    return snapshots.reverse();
+
+    return snapshots;
 }
 
 /** 加载当月所有每日快照并汇总用量 */

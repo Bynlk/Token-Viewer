@@ -15,10 +15,18 @@ export const XIAOMI_CONFIG = {
     headerKey: 'Cookie',
 };
 
+/** 模型费率接口 */
+export interface ModelRates {
+    cacheHit: number;
+    input: number;
+    output: number;
+}
+
 /** 各模型 Credit 消耗比例 */
-export const MODEL_RATES: Record<string, { cacheHit: number; input: number; output: number }> = {
+export const MODEL_RATES: Record<string, ModelRates> = {
     'mimo-v2.5-pro': { cacheHit: 2.5, input: 300, output: 600 },
     'mimo-v2.5':     { cacheHit: 2,   input: 100, output: 200 },
+    '_default':      { cacheHit: 1,   input: 100, output: 200 },
 };
 
 /** 应用全局状态 */
