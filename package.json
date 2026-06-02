@@ -2,7 +2,7 @@
   "name": "token-viewer",
   "displayName": "Token Viewer",
   "description": "小米 MiMo Credits 全方位管理平台：监控、趋势分析、预算管理、多账号、团队协作",
-  "version": "3.0.3",
+  "version": "3.1.0",
   "publisher": "bynlk",
   "repository": {
     "type": "git",
