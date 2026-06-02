@@ -109,8 +109,10 @@ describe('calcCredits', () => {
         assert.equal(result, 100 * 2 + 200 * 100 + 300 * 200);
     });
 
-    it('returns 0 for unknown model', () => {
-        assert.equal(calcCredits('unknown-model', 100, 200, 300), 0);
+    it('uses fallback rates for unknown model', () => {
+        // _default: cacheHit=1, input=100, output=200
+        const result = calcCredits('unknown-model', 100, 200, 300);
+        assert.equal(result, 100 * 1 + 200 * 100 + 300 * 200);
     });
 
     it('handles zero values', () => {
