@@ -1,0 +1,153 @@
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write
+
+jobs:
+  test:
+    strategy:
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+        node-version: [18, 20]
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Use Node.js ${{ matrix.node-version }}
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node-version }}
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Type check
+        run: npx tsc -p ./ --noEmit
+
+      - name: Compile
+        run: npx tsc -p ./
+
+      - name: Run tests
+        run: npm test
+
+  release:
+    runs-on: ubuntu-latest
+    needs: test
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # 获取完整历史用于生成 changelog
+
+      - name: Use Node.js 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Install vsce
+        run: npm install -g @vscode/vsce
+
+      - name: Get version from tag
+        id: version
+        run: echo "VERSION=${GITHUB_REF#refs/tags/v}" >> $GITHUB_OUTPUT
+
+      - name: Verify package.json version matches tag
+        run: |
+          PKG_VERSION=$(node -p "require('./package.json').version")
+          TAG_VERSION="${{ steps.version.outputs.VERSION }}"
+          if [ "$PKG_VERSION" != "$TAG_VERSION" ]; then
+            echo "❌ package.json version ($PKG_VERSION) does not match tag ($TAG_VERSION)"
+            exit 1
+          fi
+
+      - name: Generate release notes
+        id: notes
+        run: |
+          # 获取上一个 tag
+          PREV_TAG=$(git tag --sort=-v:refname | head -2 | tail -1)
+          if [ -z "$PREV_TAG" ] || [ "$PREV_TAG" = "${{ github.ref_name }}" ]; then
+            COMMITS=$(git log --pretty=format:"- %s (%h)" HEAD)
+          else
+            COMMITS=$(git log --pretty=format:"- %s (%h)" ${PREV_TAG}..HEAD)
+          fi
+
+          # 分类 commits
+          FEATURES=$(echo "$COMMITS" | grep -i "^- feat" || true)
+          FIXES=$(echo "$COMMITS" | grep -i "^- fix" || true)
+          REFACTORS=$(echo "$COMMITS" | grep -i "^- refactor" || true)
+          TESTS=$(echo "$COMMITS" | grep -i "^- test" || true)
+          CI=$(echo "$COMMITS" | grep -i "^- ci" || true)
+          OTHERS=$(echo "$COMMITS" | grep -ivE "^- (feat|fix|refactor|test|ci)" || true)
+
+          # 写入临时文件
+          {
+            echo "## 🚀 Token Viewer v${{ steps.version.outputs.VERSION }}"
+            echo ""
+            echo "### 📦 安装"
+            echo '```'
+            echo "code --install-extension token-viewer-${{ steps.version.outputs.VERSION }}.vsix"
+            echo '```'
+            echo ""
+
+            if [ -n "$FEATURES" ]; then
+              echo "### ✨ 新功能"
+              echo "$FEATURES"
+              echo ""
+            fi
+
+            if [ -n "$FIXES" ]; then
+              echo "### 🐛 修复"
+              echo "$FIXES"
+              echo ""
+            fi
+
+            if [ -n "$REFACTORS" ]; then
+              echo "### ♻️ 重构"
+              echo "$REFACTORS"
+              echo ""
+            fi
+
+            if [ -n "$TESTS" ]; then
+              echo "### 🧪 测试"
+              echo "$TESTS"
+              echo ""
+            fi
+
+            if [ -n "$CI" ]; then
+              echo "### 🔧 CI/CD"
+              echo "$CI"
+              echo ""
+            fi
+
+            if [ -n "$OTHERS" ]; then
+              echo "### 📝 其他"
+              echo "$OTHERS"
+              echo ""
+            fi
+
+            echo "---"
+            echo "**完整变更日志**: https://github.com/${{ github.repository }}/compare/${PREV_TAG:-initial}...${{ github.ref_name }}"
+          } > release_notes.md
+
+          cat release_notes.md
+
+      - name: Package extension
+        run: vsce package
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          name: "Token Viewer v${{ steps.version.outputs.VERSION }}"
+          body_path: release_notes.md
+          files: "*.vsix"
+          draft: false
+          prerelease: ${{ contains(steps.version.outputs.VERSION, '-') }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
